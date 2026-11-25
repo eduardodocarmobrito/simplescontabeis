@@ -10940,6 +10940,9 @@ async function radResumoApuracao(box, urlApi, dEntradas){
   const creditoEntradas = fe.reduce((s,f)=>s+(f.creditoDestacado||0),0);
   const riscoEntradas = fe.reduce((s,f)=>s+(f.risco||0),0);
   const saudaveis = Math.max(0, creditoEntradas - riscoEntradas);
+  const kE = (dEntradas && dEntradas.kpis) || {};
+  const perdaErro = kE.perdaErro || 0;              // crédito perdido por falta de destaque / erro na nota
+  const resumosSemItens = kE.resumosSemItens || 0;  // notas que chegaram incompletas (sem itens)
   box.innerHTML = `<div class="card"><div class="empty-state">🧮 Montando o resumo da CBS (débitos × créditos)…</div></div>`;
   let debito = 0, notasSaida = 0, erroSaida = null;
   try{
@@ -10958,8 +10961,9 @@ async function radResumoApuracao(box, urlApi, dEntradas){
       ${tile('Créditos saudáveis (entradas)', '− '+rtBRL(saudaveis), 'crédito seguro das compras', '#1f6e43')}
       ${tile(saldo>=0?'Saldo a pagar (estimado)':'Saldo credor (estimado)', rtBRL(Math.abs(saldo)), saldo>=0?'CBS a recolher no período':'crédito a aproveitar depois', saldo>=0?'var(--accent-deep)':'#1f6e43')}
       ${riscoEntradas>0?tile('Crédito em risco — RAD recupera', rtBRL(riscoEntradas), 'recolhendo a CBS via RAD você garante', '#c9a227'):''}
+      ${(perdaErro>0||resumosSemItens>0)?tile('Crédito não aproveitado (falta de destaque)', rtBRL(perdaErro), (resumosSemItens>0?`${rtNum(resumosSemItens)} nota(s) incompleta(s) · `:'')+'notas sem IBS/CBS destacado ou com erro — corrigível pelo fornecedor', '#d08a1b'):''}
     </div>
-    <div class="rt-mut" style="font-size:11.5px; margin-top:6px;"><b>Débitos (saídas) − Créditos saudáveis (entradas) = Saldo.</b> O crédito em <b>risco de glosa</b> não entra como "saudável"; pelo <b>RAD</b> você recolhe a CBS dele e recupera o crédito, reduzindo o saldo a pagar.${erroSaida?` <span style="color:var(--debit);">(não consegui a auditoria de saídas: ${esc(erroSaida)})</span>`:''}</div>
+    <div class="rt-mut" style="font-size:11.5px; margin-top:6px;"><b>Débitos (saídas) − Créditos saudáveis (entradas) = Saldo.</b> O crédito em <b>risco de glosa</b> não entra como "saudável"; pelo <b>RAD</b> você recolhe a CBS dele e recupera o crédito, reduzindo o saldo. Já o <b>crédito não aproveitado</b> é o que se perde por <b>notas sem destaque de IBS/CBS ou incompletas</b> — esse só se recupera corrigindo a nota com o fornecedor (o RAD não resolve falta de destaque).${erroSaida?` <span style="color:var(--debit);">(não consegui a auditoria de saídas: ${esc(erroSaida)})</span>`:''}</div>
   </div>`;
 }
 // Tabela "perspectiva" (demonstração pro cliente): as compras REAIS dos XMLs dele, a CBS destacada em
@@ -11264,6 +11268,7 @@ function rtPainelHtml(d, urlPdf){
     <div class="rt-regras">${d.regras.length ? d.regras.map(r=>`<button class="rt-regra" data-regra="${esc(r.regra)}" style="--c:${RT_SEV[r.severidade].cor};"><span aria-hidden="true">${RT_SEV[r.severidade].ic}</span><span class="rt-regra-t">${esc(r.titulo)}</span><b>${rtNum(r.qtd)}</b></button>`).join('') : '<div class="empty-state">Nenhum achado — todas as notas aderentes.</div>'}</div>
   </div>
 
+  ${S?'':'<div id="rtNotifAuto"></div>'}
   <div class="card rt-card">
     <div class="rt-card-t">${S?'Destinatários (clientes)':'Ranking de fornecedores'}</div>
     <div class="rt-ncm-filtros" id="rtFornChips"></div>
@@ -11355,7 +11360,7 @@ function rtFornTabelaHtml(forn){
   return `<table class="data-table rt-tabela"><thead><tr>${S?'':`<th style="width:34px;"><input type="checkbox" id="rtSelTodos" title="Marcar todos os da lista" ${todosMarcados?'checked':''}></th>`}<th>${S?'Destinatário':'Fornecedor'}</th><th>${S?'Tipo':'Regime IBS/CBS'}</th><th class="num">Notas</th><th class="num">${S?'Vendas':'Compras'}</th><th class="num">% com IBS/CBS</th><th>Achados</th><th class="num">${S?'IBS/CBS destacado':'Crédito destacado'}</th>${S?'':'<th class="num">Em jogo 2027/ano</th>'}<th>Score</th></tr></thead><tbody>
     ${lista.map(f=>`<tr class="rt-click" data-forn="${esc(f.cnpj)}">
       ${S?'':`<td class="rt-selcel"><input type="checkbox" class="rtSelForn" value="${esc(f.cnpj)}" ${RT_SEL_FORN.has(f.cnpj)?'checked':''}></td>`}
-      <td><b>${esc(f.nome)}</b><div class="rt-mut" style="font-size:11px;">${esc(fmtCnpjCpf(f.cnpj))} · ${esc(f.uf||'')}</div></td>
+      <td><b>${esc(f.nome)}</b>${(f.emailsNotificacao||[]).length?` <span title="E-mail para notificação: ${esc(f.emailsNotificacao.join(', '))}" style="cursor:help;">✉️</span>`:''}<div class="rt-mut" style="font-size:11px;">${esc(fmtCnpjCpf(f.cnpj))} · ${esc(f.uf||'')}</div></td>
       <td>${rtRegimeChip(f.regime, f.regimeLabel)}</td>
       <td class="num">${rtNum(f.notas)}</td><td class="num">${rtBRL(f.valor)}</td><td class="num">${f.pctComGrupo}%</td>
       <td style="white-space:nowrap;">${f.alta?`<span style="color:#d03b3b;">⛔ ${f.alta}</span> `:''}${f.media?`<span style="color:#ec835a;">⚠ ${f.media}</span> `:''}${f.baixa?`<span class="rt-mut">• ${f.baixa}</span>`:''}${!f.alta&&!f.media&&!f.baixa?'<span style="color:#0ca30c;">✔</span>':''}</td>
@@ -11390,7 +11395,48 @@ function rtAchadoHtml(a, comFornecedor){
     <div class="rt-ach-rec">➜ ${esc(a.recomendacao)}</div>
   </div>`;
 }
+// Card "Notificação automática dos fornecedores" (entradas): status, ligar/desligar (Administrador), envios.
+async function rtNotifAutoCarregar(d){
+  const box = document.getElementById('rtNotifAuto');
+  if(!box || d.direcao==='saida') return;
+  const cliente = STATE.user.perfil==='Cliente';
+  let s;
+  try{ s = await api(cliente ? '/reforma/minha-empresa/notificacao-auto' : '/reforma/notificacao-auto?empresaId='+d.empresa.id); }catch(e){ box.innerHTML=''; return; }
+  const hoje = new Date(Date.now()-3*3600000).toISOString().slice(0,10);
+  const rem = s.remetente==='empresa' ? 'pelo e-mail da própria empresa (E-mail de envio)' : s.remetente==='escritorio' ? 'pelo e-mail corporativo do escritório (a empresa ainda não tem E-mail de envio próprio)' : null;
+  box.innerHTML = `<div class="card rt-card">
+    <div class="row" style="justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+      <div class="rt-card-t" style="margin:0;">✉️ Notificação automática dos fornecedores <span class="tag ${s.ativo?'ok':'muted'}" style="vertical-align:middle;">${s.ativo?'Ligada':'Desligada'}</span></div>
+      ${s.podeLigar && s.ativo ? '<button class="btn small" id="rtNotifRodar">Rodar agora</button>' : ''}
+    </div>
+    <div class="rt-card-s" style="text-align:justify;">Quando uma NF-e de entrada cair na auditoria com inconsistência, o robô envia ao fornecedor a notificação (mesmo texto do "Copiar notificação") com o relatório completo em PDF. Cada nota é avisada uma vez; roda de hora em hora, depois da validação na Calculadora RFB. O e-mail do fornecedor é cadastrado na janela dele (clique no fornecedor no ranking).</div>
+    <div style="font-size:13px; margin:6px 0;">${s.ativo?`Avisando notas emitidas a partir de <b>${fmtDateIso(s.desde)}</b> · `:''}<b>${s.fornecedoresComEmail}</b> fornecedor(es) com e-mail cadastrado · ${rem?`envio ${rem}`:'<span style="color:var(--debit);">nenhum e-mail de envio configurado (nem da empresa, nem o corporativo do escritório)</span>'}</div>
+    ${s.podeLigar ? `<div class="row" style="gap:10px; align-items:flex-end; flex-wrap:wrap; margin-top:6px;">
+      <label class="checkbox-row" style="margin:0 0 9px;"><input type="checkbox" id="rtNotifAtivo" ${s.ativo?'checked':''}> Envio automático ligado</label>
+      <div class="field" style="width:180px; margin:0;"><label>Notas a partir de</label>${dateInputHtml('rtNotifDesde', s.desde || hoje)}</div>
+      <button class="btn small primary" id="rtNotifSalvar" style="margin-bottom:5px;">Salvar</button>
+    </div>` : (cliente ? '<div class="rt-mut" style="font-size:12px;">Para ligar ou desligar o envio automático, fale com o seu escritório de contabilidade.</div>' : '')}
+    ${s.envios.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="data-table"><thead><tr><th>Quando</th><th>Fornecedor</th><th>NF-e</th><th>Para</th><th>Situação</th></tr></thead><tbody>${s.envios.map(e=>`<tr><td style="white-space:nowrap;">${fmtDateHora(e.criado_em)}</td><td>${esc(e.fornecedor||'')}<div class="rt-mut" style="font-size:11px;">${esc(fmtCnpjCpf(e.cnpj))}</div></td><td>${esc(e.notas||'')}</td><td style="font-size:12px;">${esc(e.emails||'')}</td><td>${e.status==='enviado'?'<span class="tag ok">Enviado</span>':`<span class="tag bad" title="${esc(e.erro||'')}">Erro</span><div style="font-size:11px; color:var(--debit);">${esc((e.erro||'').slice(0,120))}</div>`}</td></tr>`).join('')}</tbody></table></div>` : ''}
+  </div>`;
+  if(s.podeLigar){
+    setupDatePicker('rtNotifDesde','rtNotifDesde_text');
+    document.getElementById('rtNotifSalvar').addEventListener('click', async ()=>{
+      try{
+        await api('/reforma/notificacao-auto', { method:'PUT', body:{ empresaId:d.empresa.id, ativo: document.getElementById('rtNotifAtivo').checked, desde: document.getElementById('rtNotifDesde').value } });
+        toast('Notificação automática salva.','ok'); rtNotifAutoCarregar(d);
+      }catch(e){ toast(e.message,'err'); }
+    });
+    const rodar = document.getElementById('rtNotifRodar');
+    if(rodar) rodar.addEventListener('click', async ()=>{
+      rodar.disabled = true; const orig = rodar.textContent; rodar.textContent = 'Auditando e enviando…';
+      try{ const r = await api('/reforma/notificacao-auto/rodar', { method:'POST', body:{ empresaId:d.empresa.id } }); toast(r.mensagem, r.erros?'err':'ok'); rtNotifAutoCarregar(d); }
+      catch(e){ toast(e.message,'err'); }
+      finally{ rodar.disabled = false; rodar.textContent = orig; }
+    });
+  }
+}
 function rtLigarPainel(painel, d, urlPdf){
+  rtNotifAutoCarregar(d);
   const renderForn = ()=>{
     const cont = {}; d.fornecedores.forEach(f=>{ cont[f.status] = (cont[f.status]||0)+1; });
     document.getElementById('rtFornChips').innerHTML = `<button class="rt-fchip ${RT_FORN_ST.size?'':'on'}" data-st="">Todas <b>${d.fornecedores.length}</b></button>` +
@@ -11521,10 +11567,22 @@ function rtFornecedorDrawer(d, cnpj, urlPdf){
       </div>
       <div class="rt-reco"><b>Recomendação:</b> ${esc(f.recomendacao)}</div>
       <div class="row" style="gap:8px; margin:10px 0; flex-wrap:wrap; ${RT_DIRECAO==='saida'?'display:none;':''}"><button class="btn small primary" id="rtRelEste">📄 Relatório completo para este fornecedor (PDF)</button><button class="btn small" id="rtCopiarNotif">✉️ Copiar notificação ao fornecedor</button></div>
+      <div class="field" style="margin:6px 0 12px; ${RT_DIRECAO==='saida'?'display:none;':''}"><label>E-mail(s) do fornecedor para a notificação automática</label>
+        <div class="row" style="gap:6px; flex-wrap:nowrap;"><input type="text" id="rtFornEmails" style="flex:1;" value="${esc((f.emailsNotificacao||[]).join(', '))}" placeholder="fiscal@fornecedor.com.br, faturamento@…"><button class="btn small" id="rtFornEmailsSalvar">Salvar</button></div>
+        <div class="rt-mut" style="font-size:11.5px; margin-top:3px;">Fica amarrado ao CNPJ ${esc(fmtCnpjCpf(f.cnpj))}. Com o envio automático ligado, toda nota nova deste fornecedor que cair na auditoria com inconsistência é enviada para estes e-mails (separe por vírgula, até 5).</div></div>
       <div class="rt-card-t" style="margin-top:6px;">Evidências (${ach.length})</div>
       ${ach.length ? [...porNota.entries()].map(([k, lst])=>`<div style="margin-top:10px;"><div class="rt-mut" style="font-size:12px; margin-bottom:4px;">NF ${esc(lst[0].numero)}${lst[0].serie?'/'+esc(lst[0].serie):''} · ${fmtDateIso(lst[0].dhEmi)} · chave ${esc(lst[0].chave)}</div>${lst.map(a=>rtAchadoHtml(a, false)).join('')}</div>`).join('') : '<div class="empty-state">✔ Nenhum achado para este fornecedor no período.</div>'}
     </div>`);
   document.getElementById('rtFornFechar').addEventListener('click', closeDrawer);
+  document.getElementById('rtFornEmailsSalvar').addEventListener('click', async ()=>{
+    const inp = document.getElementById('rtFornEmails');
+    const cliente = STATE.user.perfil==='Cliente';
+    try{
+      const r = await api(cliente ? '/reforma/minha-empresa/fornecedor-email' : '/reforma/fornecedor-email', { method:'PUT', body:{ empresaId: d.empresa.id, cnpj: f.cnpj, emails: inp.value } });
+      f.emailsNotificacao = r.emails; inp.value = r.emails.join(', '); inp.style.borderColor='';
+      toast(r.emails.length ? 'E-mail do fornecedor salvo.' : 'E-mail do fornecedor removido.','ok');
+    }catch(e){ inp.style.borderColor='var(--debit)'; inp.focus(); toast(e.message,'err'); }
+  });
   document.getElementById('rtRelEste').addEventListener('click', (ev)=>{
     if(!urlPdf){ toast('Recarregue a tela e tente de novo.','err'); return; }
     rtBaixar(urlPdf.replace('/auditoria/pdf','/auditoria/fornecedores-pdf')+'&cnpjs='+encodeURIComponent(f.cnpj), `Inconsistencias IBS-CBS - ${f.nome.slice(0,50)}.pdf`, ev.currentTarget, 'Gerando relatório…');
@@ -17020,8 +17078,9 @@ function propCalcular(a, c, par){
   const r2 = v => Math.round(v*100)/100;
   const fin = (v, d, isento) => isento ? 0 : r2(v * (1 - (d||0)/100));
   const buscaFinal = fin(c.buscaMensal, c.buscaDescontoPct, c.buscaIsento), reformaFinal = fin(c.reformaMensal, c.reformaDescontoPct, c.reformaIsento);
-  const mensalBruto = r2(c.buscaMensal + c.reformaMensal);
-  const subtotal = r2(buscaFinal + reformaFinal);
+  const notifTabela = c.notifIncluido ? c.notifMensal||0 : 0, notifFinal = c.notifIncluido ? fin(c.notifMensal||0, c.notifDescontoPct, c.notifIsento) : 0;
+  const mensalBruto = r2(c.buscaMensal + c.reformaMensal + notifTabela);
+  const subtotal = r2(buscaFinal + reformaFinal + notifFinal);
   const descontoGeral = r2(subtotal * c.descontoPct / 100);
   const descontoValor = r2(mensalBruto - subtotal + descontoGeral);
   const mensal = r2(subtotal - descontoGeral);
@@ -17034,7 +17093,7 @@ function propCalcular(a, c, par){
   const liquido = Math.round(economia - investimentoAno1);
   const roi = investimentoAno1 > 0 ? Math.round(economia/investimentoAno1*10)/10 : 0;
   const paybackMeses = economia > 0 ? Math.round(investimentoAno1/(economia/12)*10)/10 : null;
-  return { mensalBruto, buscaFinal, reformaFinal, subtotal, descontoGeral, descontoValor, mensal, implantacaoFinal, analistaMensal, analistaAno, credito, economia, investimentoAno1, liquido, roi, paybackMeses };
+  return { mensalBruto, buscaFinal, reformaFinal, notifFinal, subtotal, descontoGeral, descontoValor, mensal, implantacaoFinal, analistaMensal, analistaAno, credito, economia, investimentoAno1, liquido, roi, paybackMeses };
 }
 // Campo de anexo da proposta assinada (fora do site) no modal de aprovação + envio antes de aprovar.
 function propAssinadaCampoHtml(P, idInput){
@@ -17199,9 +17258,10 @@ async function renderPropostaEditor(id){
         <tbody>${[
           ['Busca', 'Busca de XML', 'mensal', c.buscaMensal, c.buscaDescontoPct, c.buscaIsento, `Sugestão: ${propBRL(a.sugestao.buscaMensal)} (${t.cnpjs} CNPJ${t.cnpjs>1?'s':''} × R$ 99,00)`],
           ['Reforma', 'Auditoria Reforma Tributária', 'mensal', c.reformaMensal, c.reformaDescontoPct, c.reformaIsento, `Sugestão pelo volume (${a.volume.notasMes} NF-e/mês): ${propBRL(a.sugestao.reformaMensal)}`],
+          ['Notif', 'Notificação automática dos fornecedores (e-mail)', 'mensal · opcional', c.notifMensal||0, c.notifDescontoPct, c.notifIsento, `robô envia a notificação + PDF a cada nota com inconsistência (${a.notificarTotal} fornecedor(es) a notificar hoje)`],
           ['Implantacao', 'Implantação', 'valor único', c.implantacao, c.implantacaoDescontoPct, c.implantacaoIsenta, `Sugestão: ${propBRL(a.sugestao.implantacao)}`],
         ].map(([k, nome, tipo, valor, d, isento, dica])=>`<tr>
-          <td><b>${nome}</b><div style="font-size:11.5px; color:var(--ink-soft);">${tipo} · ${dica}</div>${k==='Implantacao'?`<div style="font-size:11.5px; color:var(--ink-soft); margin-top:5px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">Parcelar em <input type="number" id="ppImplParcelas" min="1" max="48" value="${c.implantacaoParcelas||1}" ${dis} style="width:56px; padding:5px 7px; border:1px solid var(--rule); border-radius:8px; background:var(--paper); color:var(--ink); font-size:13px;"> vez(es) <span id="ppImplParcelaInfo"></span></div>`:''}</td>
+          <td>${k==='Notif'?`<label class="checkbox-row" style="margin:0 0 2px;"><input type="checkbox" id="ppNotifIncluido" ${c.notifIncluido?'checked':''} ${dis}> <b>${nome}</b></label>`:`<b>${nome}</b>`}<div style="font-size:11.5px; color:var(--ink-soft);">${tipo} · ${dica}</div>${k==='Implantacao'?`<div style="font-size:11.5px; color:var(--ink-soft); margin-top:5px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">Parcelar em <input type="number" id="ppImplParcelas" min="1" max="48" value="${c.implantacaoParcelas||1}" ${dis} style="width:56px; padding:5px 7px; border:1px solid var(--rule); border-radius:8px; background:var(--paper); color:var(--ink); font-size:13px;"> vez(es) <span id="ppImplParcelaInfo"></span></div>`:''}</td>
           <td><input type="text" id="pp${k}" value="${esc(propMoedaTxt(valor))}" ${dis} style="width:120px;"></td>
           <td><input type="text" id="pp${k}Desc" value="${esc(String(d||0).replace('.',','))}" ${dis} style="width:80px;"></td>
           <td><input type="checkbox" id="pp${k}Isento" ${isento?'checked':''} ${dis}></td>
@@ -17254,6 +17314,8 @@ async function renderPropostaEditor(id){
     implantacaoParcelas: Math.min(48, Math.max(1, Math.round(propNum(document.getElementById('ppImplParcelas')?.value))||1)),
     salarioAnalista: propNum(document.getElementById('ppSalario').value), dedicacaoPct: Math.min(100, Math.max(0, Math.round(propNum(document.getElementById('ppDedicacao').value)))),
     validadeDias: Math.max(1, Math.round(propNum(document.getElementById('ppValidade').value)) || 30), observacoes: document.getElementById('ppObs').value,
+    notifIncluido: document.getElementById('ppNotifIncluido').checked, notifMensal: propNum(document.getElementById('ppNotif').value),
+    notifDescontoPct: Math.min(100, Math.max(0, propNum(document.getElementById('ppNotifDesc').value))), notifIsento: document.getElementById('ppNotifIsento').checked,
   });
   const desenhaResumo = () => {
     const cfg = lerCfg(), v = propCalcular(a, cfg, P.parametros);
@@ -17261,6 +17323,7 @@ async function renderPropostaEditor(id){
     const finalHtml = (fin, tab) => fin===0 && tab>0 ? '<span class="tag ok">isento</span>' : `<b>${propBRL(fin)}</b>${fin<tab?`<div style="font-size:11px; color:var(--ink-soft); text-decoration:line-through;">${propBRL(tab)}</div>`:''}`;
     document.getElementById('ppBuscaFinal').innerHTML = finalHtml(v.buscaFinal, cfg.buscaMensal);
     document.getElementById('ppReformaFinal').innerHTML = finalHtml(v.reformaFinal, cfg.reformaMensal);
+    document.getElementById('ppNotifFinal').innerHTML = cfg.notifIncluido ? finalHtml(v.notifFinal, cfg.notifMensal) : '<span style="color:var(--ink-soft);">fora</span>';
     document.getElementById('ppImplantacaoFinal').innerHTML = finalHtml(v.implantacaoFinal, cfg.implantacao);
     const ppNParc = cfg.implantacaoParcelas||1, ppPInfo = document.getElementById('ppImplParcelaInfo');
     if(ppPInfo) ppPInfo.innerHTML = (ppNParc>1 && v.implantacaoFinal) ? `→ <b style="color:var(--accent-deep);">${ppNParc}× de ${propBRL(Math.floor(v.implantacaoFinal*100/ppNParc)/100)}</b>` : (ppNParc>1?'':'<span style="color:var(--ink-soft);">(à vista)</span>');
