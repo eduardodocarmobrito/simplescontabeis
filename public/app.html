@@ -7806,7 +7806,7 @@ async function pageNotasEntrada(){
         ${tile('Total de notas', d.total, '')}
         ${saida ? tile('Emitidas', d.emitidas.qtd, fmtMoney(d.emitidas.valor) + (d.emitidas.cte && d.emitidas.cte.qtd ? ` · ${d.emitidas.cte.qtd} CT-e (${fmtMoney(d.emitidas.cte.valor)})` : '')) : tile('Recebidas', d.recebidas.qtd, fmtMoney(d.recebidas.valor))}
         ${tile('Autorizadas', d.autorizadas, '', 'var(--accent-deep)')}
-        ${tile('Canceladas', d.canceladas, '', d.canceladas?'var(--debit)':'')}
+        ${nfeTileCanceladas(d, document.getElementById('neSituacao')?.value==='canceladas')}
         ${tile('Com IBS/CBS', d.comReforma, 'reforma', 'var(--accent-deep)')}
       </div>
       <div class="row" style="gap:12px; align-items:flex-start; flex-wrap:wrap; margin-top:12px;">
@@ -7928,6 +7928,13 @@ async function pageNotasEntrada(){
       document.getElementById('neDataAte').addEventListener('change', ()=>{ carregar(); carregarDashboard(); });
       document.getElementById('neTipo').addEventListener('change', carregar);
       document.getElementById('neSituacao').addEventListener('change', carregar);
+      if(!window._neCancClickLigado) window._neCancClickLigado = true, document.addEventListener('click', ev=>{
+        const t = ev.target.closest && ev.target.closest('.nfeTileCanc');
+        const sel = document.getElementById('neSituacao');
+        if(!t || !sel || !document.body.contains(sel)) return;
+        sel.value = sel.value==='canceladas' ? '' : 'canceladas';
+        sel.dispatchEvent(new Event('change'));
+      });
       // Export PDF analítico (igual à tela do escritório) — abre a aba já no clique e, se der erro
       // (ex.: nenhuma nota fora do Estado), fecha e mostra toast amigável em vez do JSON cru.
       const exportarAnaliticoPdfNe = (uf)=>{
@@ -11459,6 +11466,13 @@ function rtAmpliarPeriodo(d){
     }
   }
 // Fornecedores do período sem e-mail de notificação (produtor rural PF fica fora: não costuma ter e-mail de faturamento).
+// Card "Canceladas" da Busca de XML: total de todos os tipos + detalhe por tipo; clicável (filtra a lista).
+function nfeTileCanceladas(d, ativo){
+  const pt = d.canceladasPorTipo || {};
+  const rot = { nfe:'NF-e', nfce:'NFC-e', cte:'CT-e', nfse:'NFS-e' };
+  const det = Object.entries(pt).filter(([,n])=>n).map(([t,n])=>`${n} ${rot[t]||t}`).join(' · ');
+  return `<div class="kpi nfeTileCanc" title="${ativo?'Mostrando só as canceladas — clique para ver todas':'Clique para ver só as canceladas na lista de documentos'}" style="min-width:130px; flex:1; cursor:pointer; ${ativo?'outline:2px solid var(--debit); background:rgba(208,59,59,.08);':''}"><div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">Canceladas ${ativo?'· filtrando ✕':''}</div><div style="font-size:22px; font-weight:700; ${d.canceladas?'color:var(--debit);':''}">${d.canceladas}</div><div style="font-size:11.5px; color:var(--ink-soft);">${det || (ativo?'clique para limpar':'clique para filtrar')}</div></div>`;
+}
 function rtFornecedoresNotificaveis(d){ return d.fornecedores.filter(f=>f.regime!=='pf'); }
 function rtSemEmailQtd(d){ return rtFornecedoresNotificaveis(d).filter(f=>!(f.emailsNotificacao||[]).length).length; }
 // Lista dos fornecedores com o campo de e-mail: aba "Sem e-mail" (com inconsistência primeiro) e aba "Configurados".
@@ -11939,6 +11953,7 @@ async function pageNfeBusca(){
     const empresa = empresas.find(e=>e.id===empresaId);
     let nfeDocDirecao = 'emitida';
     let nfePerfilFlag = ''; // flag do "Perfil das Notas" clicada pra filtrar a lista de Documentos ('' = Todas)
+    let nfeSituacao = ''; // clicar no card "Canceladas" filtra a lista só pelas canceladas ('' = todas)
     // mostrarLista() já barrou a entrada aqui se o módulo estivesse inativo (paywall antes de
     // chegar no detalhe) — esse callback só cobre o caso raro de o módulo vencer com a tela já
     // aberta; sem handler nenhum, renderCertificadoBuscaXml tentava chamar uma função inexistente
@@ -12057,7 +12072,7 @@ async function pageNfeBusca(){
           ${tile('Recebidas', d.recebidas.qtd, fmtMoney(d.recebidas.valor))}
           ${tile('Emitidas', d.emitidas.qtd, fmtMoney(d.emitidas.valor) + (d.emitidas.cte && d.emitidas.cte.qtd ? ` · ${d.emitidas.cte.qtd} CT-e (${fmtMoney(d.emitidas.cte.valor)})` : ''))}
           ${tile('Autorizadas', d.autorizadas, '', 'var(--accent-deep)')}
-          ${tile('Canceladas', d.canceladas, '', d.canceladas?'var(--debit)':'')}
+          ${nfeTileCanceladas(d, nfeSituacao==='canceladas')}
           ${tile('Com IBS/CBS', d.comReforma, 'reforma', 'var(--accent-deep)')}
         </div>
         <div class="row" style="gap:12px; align-items:flex-start; flex-wrap:wrap; margin-top:12px;">
@@ -12103,6 +12118,14 @@ async function pageNfeBusca(){
           ${bar('CBS (reforma)', imp.cbs, 'var(--accent-deep)')}
         </div>
         </div>`;
+      const tileCanc = body.querySelector('.nfeTileCanc');
+      if(tileCanc) tileCanc.addEventListener('click', ()=>{
+        nfeSituacao = nfeSituacao==='canceladas' ? '' : 'canceladas';
+        tileCanc.outerHTML = nfeTileCanceladas(d, nfeSituacao==='canceladas');
+        carregarDashboard();
+        carregarDocumentos();
+        if(nfeSituacao) document.getElementById('nfeDocBody')?.closest('.card')?.scrollIntoView({ behavior:'smooth', block:'start' });
+      });
       // Clicar num marcador do "Perfil das Notas" filtra a lista de Documentos só por aquelas NF
       // (clicar no mesmo de novo, ou na "Todas", limpa). Não recarrega o dashboard — só os documentos.
       body.querySelectorAll('.nfePerfilTile').forEach(el=>el.addEventListener('click', ()=>{
@@ -12186,6 +12209,7 @@ async function pageNfeBusca(){
       if(dataDe) params.set('dataDe', dataDe);
       if(dataAte) params.set('dataAte', dataAte);
       if(nfePerfilFlag) params.set('flag', nfePerfilFlag);
+      if(nfeSituacao) params.set('situacao', nfeSituacao);
       const { items } = await api('/nfe/documentos?'+params.toString());
       // Monitor da reforma (IBS/CBS): soma o que as notas desta lista já trazem no XML.
       const comReforma = items.filter(d=>(d.valorIbs>0||d.valorCbs>0));

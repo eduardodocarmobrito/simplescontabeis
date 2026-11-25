@@ -12752,6 +12752,7 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
     dataDe: typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null,
     dataAte: typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null,
     flag: typeof req.query.flag === "string" && req.query.flag ? req.query.flag : null,
+    situacao: typeof req.query.situacao === "string" && req.query.situacao ? req.query.situacao : null,
   });
   res.json({ items });
 });
@@ -12808,6 +12809,12 @@ function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | nul
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${whereKpi}`
     )
     .get(...params) as any;
+  // Card "Canceladas": conta TODO documento cancelado do período (NF-e, NFC-e, CT-e recebido/emitido e
+  // NFS-e) — antes contava só NF-e/NFC-e e CT-e emitido e escondia NFS-e/CT-e cancelados (achado 2026-11-25).
+  const canceladasPorTipo: Record<string, number> = {};
+  for (const c of sqlite
+    .prepare(`SELECT d.tipo, COUNT(*) n FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${whereDir.replace(`d.tipo IN ('nfe','nfce')`, `d.tipo IN ('nfe','nfce','cte','nfse')`)} AND ${canceladaExpr} GROUP BY d.tipo`)
+    .all(...params) as any[]) canceladasPorTipo[c.tipo] = c.n;
   // Perfil das Notas (estilo Espião): quantas notas têm cada marcador, dentro do mesmo período/escopo
   // já filtrado acima — reaproveita as colunas já cacheadas por parsearECachearTributos (flags/qtd_itens)
   // em vez de reabrir o XML. flags é um TEXT separado por vírgula ("comb,med,st"); ','||flags||',' LIKE
@@ -12845,7 +12852,8 @@ function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | nul
     total: r.total || 0,
     emitidas: { qtd: r.emitidasQtd || 0, valor: r.emitidasValor || 0, cte: { qtd: r.cteQtd || 0, valor: r.cteValor || 0 } },
     recebidas: { qtd: r.recebidasQtd || 0, valor: r.recebidasValor || 0 },
-    canceladas: r.canceladasQtd || 0,
+    canceladas: Object.values(canceladasPorTipo).reduce((a, b) => a + b, 0),
+    canceladasPorTipo,
     autorizadas: (r.total || 0) - (r.canceladasQtd || 0),
     valorTotal: r.valorTotal || 0,
     comReforma: r.comReforma || 0,
