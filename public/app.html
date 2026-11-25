@@ -10955,7 +10955,7 @@ async function radResumoApuracao(box, urlApi, dEntradas){
   const tile=(t,v,s,cor)=>`<div class="rt-kpi"><div class="rt-kpi-t">${t}</div><div class="rt-kpi-v" style="${cor?`color:${cor};`:''}">${v}</div>${s?`<div class="rt-kpi-s">${s}</div>`:''}</div>`;
   box.innerHTML = `<div class="card">
     <h3 style="margin:0 0 4px;">🧮 Resumo da CBS no período (simulação)</h3>
-    <p class="subtitle" style="margin:0 0 10px;">O que você <b>deve</b> pelas vendas (saídas), menos o <b>crédito saudável</b> das compras (entradas), dá o <b>saldo a pagar</b>. Valores estimados com a CBS de referência — não é apuração oficial.</p>
+    <p class="subtitle" style="margin:0 0 10px;">O que você <b>deve</b> pelas vendas (saídas), menos o <b>crédito saudável</b> das compras (entradas), dá o <b>saldo a pagar</b>. Valores no padrão de <b>2026 (CBS em teste, 0,9%)</b> — em 2027, na alíquota cheia, esses números ficam bem maiores. Não é apuração oficial.</p>
     <div class="rt-kpis">
       ${tile('Débitos por saídas (vendas)', rtBRL(debito), notasSaida?`${rtNum(notasSaida)} nota(s) de venda`:(erroSaida?'sem auditoria de saídas':'sem notas de venda'), '#d03b3b')}
       ${tile('Créditos saudáveis (entradas)', '− '+rtBRL(saudaveis), 'crédito seguro das compras', '#1f6e43')}
@@ -10984,6 +10984,7 @@ function radPerspectivaHtml(d){
   return `<div class="card" style="overflow-x:auto;">
     <h3 style="margin:0 0 4px;">📋 Perspectiva: suas compras e a CBS (como o RAD vai funcionar)</h3>
     <p class="subtitle" style="margin:0 0 10px;">Demonstração com as <b>suas notas de compra reais</b> (extraídas dos XMLs). Mostra, por fornecedor, a CBS destacada no crédito e o que o Recolhimento pelo Adquirente (RAD) faz. <b>Valores estimados · simulação, não é emissão.</b></p>
+    <div class="rt-mut" style="font-size:11.5px; margin:-4px 0 10px; color:#d08a1b;">⚠️ A CBS destacada hoje está na <b>alíquota de transição de 2026 (0,9%)</b> — por isso o valor parece pequeno. A partir de <b>2027</b> ela vai à alíquota cheia (estimada ~8,8%–11%) e o crédito fica cerca de <b>10× maior</b> (ver o KPI "Crédito 2027 em jogo").</div>
     <table class="data-table">
       <thead><tr><th>Fornecedor</th><th style="text-align:right;">Notas</th><th style="text-align:right;">Compras</th><th style="text-align:right;">CBS no crédito</th><th>O que o RAD faz</th></tr></thead>
       <tbody>${linhas}</tbody>
