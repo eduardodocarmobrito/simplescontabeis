@@ -57,9 +57,8 @@ const r2 = (v: number) => Math.round(v * 100) / 100;
 // a Reforma (já é módulo do catálogo) e o IRPF Rural (desligado).
 export const FUNCIONALIDADES_PROPOSTA: { modulo: string; nome: string; descricao: string }[] = [
   { modulo: "solicitacoes", nome: "Solicitações de Documentos", descricao: "Pedido de documentos aos clientes com prazo, lembrete e recebimento pelo portal." },
-  { modulo: "envio", nome: "Envio de Documentos", descricao: "Central de envio de guias e documentos aos clientes, com protocolo de entrega." },
-  { modulo: "nfse", nome: "NFS-e", descricao: "Emissão de NFS-e no Sistema Nacional pelo escritório e pelos clientes." },
-  { modulo: "nfe-busca", nome: "Busca de XML", descricao: "Consulta e download dos XML de notas dos clientes." },
+  { modulo: "envio", nome: "Envio de Documentos (central, envio manual)", descricao: "Central de envio de guias e documentos aos clientes, com protocolo de entrega. Já vem junto com os envios automáticos por e-mail/WhatsApp." },
+  { modulo: "nfse", nome: "NFS-e (emissão manual)", descricao: "Emissão avulsa de NFS-e no Sistema Nacional pelo escritório e pelos clientes. Já vem junto com a Emissão automática de NFS-e." },
   { modulo: "open_finance", nome: "Conciliação Bancária", descricao: "Extratos bancários dos clientes via Open Finance/OFX para conciliação." },
   { modulo: "integracontador", nome: "Integra Contador", descricao: "Integração com a Receita Federal: DAS, PGDAS-D, situação fiscal e caixas postais." },
   { modulo: "webdfe", nome: "Emissor NF-e", descricao: "Emissão de NF-e pelo próprio sistema." },
@@ -68,7 +67,6 @@ export const FUNCIONALIDADES_PROPOSTA: { modulo: string; nome: string; descricao
   { modulo: "financeiro", nome: "Financeiro", descricao: "Contas a pagar e a receber, honorários e cobrança do escritório." },
   { modulo: "contratos", nome: "Contratos", descricao: "Propostas, contratos e assinatura eletrônica." },
   { modulo: "relatorios", nome: "Relatórios", descricao: "Relatórios gerenciais e fiscais dos clientes." },
-  { modulo: "crm", nome: "CRM", descricao: "Funil de clientes e acompanhamento comercial." },
   { modulo: "dprh", nome: "DP/RH", descricao: "Rotinas de departamento pessoal: folha, férias e obrigações." },
   { modulo: "contabil", nome: "Contabilidade", descricao: "Rotinas contábeis e fechamento dos clientes." },
   { modulo: "fiscal", nome: "Fiscal", descricao: "Rotinas fiscais, apurações e fechamento fiscal dos clientes." },
@@ -76,6 +74,16 @@ export const FUNCIONALIDADES_PROPOSTA: { modulo: string; nome: string; descricao
   { modulo: "obrigacoes", nome: "Obrigações do Mês", descricao: "Quadro de obrigações por empresa e competência, com prazo e responsável." },
 ];
 export const ehFuncionalidade = (chave: string) => chave.startsWith("func:");
+// Página do sistema que cada módulo pago precisa pra funcionar — liberada junto quando o módulo entra
+// na proposta (por isso "Busca de XML" e "CRM" não aparecem como item separado: seriam cobrança dupla).
+export const PAGINAS_DO_MODULO: Record<string, string[]> = {
+  busca_xml_nfe: ["nfe-busca"],
+  atendimento_whatsapp: ["crm"],
+  nfse_automatico: ["nfse"],
+  envio_email_automatico: ["envio"],
+  envio_whatsapp: ["envio"],
+  reforma: ["reforma"],
+};
 
 export function catalogoParaModulos(catalogo: { chave: string; nome: string; valor_mensal: number; ativo: number }[]): { modulos: ModuloProposta[]; assentoValor: number; baseMensal: number } {
   const assento = catalogo.find((m) => m.chave === "assento_colaborador");

@@ -26427,6 +26427,7 @@ function propostaEscCriarAcesso(c: propostasEscritorio.ConfigEscritorio, admin: 
   // Funcionalidades do sistema marcadas na proposta (Certificados, Financeiro…): liberadas pro escritório.
   const insFunc = sqlite.prepare(`INSERT OR IGNORE INTO escritorio_funcionalidades (escritorio_id, modulo) VALUES (?, ?)`);
   for (const m of c.modulos) {
+    if (m.incluido) for (const pg of propostasEscritorio.PAGINAS_DO_MODULO[m.chave] || []) insFunc.run(escritorioId, pg);
     if (!m.incluido || !propostasEscritorio.ehFuncionalidade(m.chave)) continue;
     const modulo = m.chave.slice(5);
     if (!(MODULOS as readonly string[]).includes(modulo)) continue;
