@@ -24295,7 +24295,7 @@ async function renderCfgSenhas(box){
         <button class="btn primary" id="cofreNovo">+ Novo acesso</button>
       </div>
       <div class="field" style="margin-top:12px; max-width:360px;"><input type="text" id="cofreBusca" placeholder="Buscar por nome, categoria, login ou e-mail…"></div>
-      ${itens.length ? `<div style="overflow-x:auto;"><table>
+      ${itens.length ? `<div style="overflow-x:auto;"><style>.cofre-tabela td{vertical-align:top; padding-top:12px; padding-bottom:12px; border-bottom:1px solid var(--rule);} .cofre-tabela tbody tr:last-child td{border-bottom:none;}</style><table class="data-table cofre-tabela">
         <thead><tr><th>Acesso</th><th>Categoria</th><th>Login / E-mail</th><th>Senha</th><th></th></tr></thead>
         <tbody id="cofreBody">${itens.map(i=>`<tr data-cid="${i.id}" data-busca="${esc(normalizaTxt([i.titulo,i.categoria,i.login,i.email,i.url].join(' ')))}">
           <td><b>${esc(i.titulo)}</b>${i.url?`<div style="font-size:12px;"><a href="${esc(/^https?:\/\//i.test(i.url)?i.url:'https://'+i.url)}" target="_blank" rel="noopener noreferrer">${esc(i.url)}</a></div>`:''}${i.observacoes?`<div style="font-size:12px; color:var(--ink-soft); white-space:pre-wrap;">${esc(i.observacoes)}</div>`:''}${i.arquivoNome?`<div style="font-size:12px;"><a href="/api/cofre-senhas/${i.id}/arquivo" target="_blank" rel="noopener noreferrer">📎 ${esc(i.arquivoNome)}</a></div>`:''}</td>
