@@ -20550,6 +20550,8 @@ function requireCliente(req: express.Request, res: express.Response, next: expre
 function empresaTemAcessoModulo(empresaId: number, chave: string): boolean {
   const empresa = sqlite.prepare(`SELECT isento_assinatura FROM empresas WHERE id = ?`).get(empresaId) as any;
   if (empresa?.isento_assinatura) return true;
+  // Revenda do escritório (ex.: NFS-e) paga e em dia libera o módulo — só soma acesso, nunca tira.
+  if (revendaClienteAtiva(empresaId, chave)) return true;
   const row = sqlite.prepare(`SELECT assinatura_ativa_ate, trial_fim FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave) as any;
   if (!row) return false;
   const agora = new Date().toISOString().replace("T", " ").slice(0, 19);
@@ -23829,9 +23831,14 @@ function nfseModulosDaEmpresa(empresaId: number) {
     .filter((m) => !((m.chave === "envio_notas_email" || m.chave === "envio_notas_whatsapp") && !porChave.get(m.chave) && !(precoModuloEfetivo(m.valor_mensal, precoLinha(m.chave)) > 0)))
     .map((m) => {
     const contratado = porChave.get(m.chave);
-    const { status, acesso } = isento ? { status: "isento", acesso: true } : moduloStatusParaEmpresa(m, contratado);
+    let { status, acesso } = isento ? { status: "isento", acesso: true } : moduloStatusParaEmpresa(m, contratado);
+    const acessoProprio = acesso;
+    const revenda = isento ? null : revendaClienteAtiva(empresaId, m.chave);
+    if (revenda && !acesso) { status = "ativo"; acesso = true; }
     return {
       chave: m.chave,
+      liberadoPeloEscritorio: !!revenda && !acessoProprio,
+      revendaAtivaAte: revenda?.assinatura_ativa_ate || null,
       nome: m.nome,
       valorMensal: precoModuloEfetivo(m.valor_mensal, precoLinha(m.chave)),
       ativo: !!m.ativo,
@@ -24293,6 +24300,26 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS escritorio_revenda_precos (
   atualizado_em TEXT DEFAULT (datetime('now')),
   PRIMARY KEY (escritorio_id, modulo_chave)
 )`);
+// Módulos de CLIENTE revendidos pelo escritório que não são módulo do catálogo de escritório (sem linha em
+// modulos_escritorio_catalogo): a revenda ativa LIBERA o módulo do cliente (empresaTemAcessoModulo), sem
+// nunca bloquear quem já paga direto. NFS-e: o escritório precisa ter a NFS-e liberada pra revender.
+const REVENDA_MODULOS_CLIENTE: Record<string, { nome: string; moduloCliente: string; funcionalidadeEscritorio: string }> = {
+  nfse: { nome: "Emissão de NFS-e", moduloCliente: "nfse", funcionalidadeEscritorio: "nfse" },
+};
+function revendaNomeModulo(chave: string): string {
+  return (sqlite.prepare(`SELECT nome FROM modulos_escritorio_catalogo WHERE chave = ?`).get(chave) as any)?.nome || REVENDA_MODULOS_CLIENTE[chave]?.nome || chave;
+}
+function escritorioPodeRevender(escritorioId: number, chave: string): boolean {
+  const v = REVENDA_MODULOS_CLIENTE[chave];
+  return v ? escritorioTemFuncionalidade(escritorioId, v.funcionalidadeEscritorio) : escritorioTemModulo(escritorioId, chave);
+}
+// Revenda ativa que libera um módulo de cliente (ex.: NFS-e) pra esta empresa — devolve a linha ou null.
+function revendaClienteAtiva(empresaId: number, moduloCliente: string): any {
+  const chaves = Object.entries(REVENDA_MODULOS_CLIENTE).filter(([, v]) => v.moduloCliente === moduloCliente).map(([k]) => k);
+  if (!chaves.length) return null;
+  const rows = sqlite.prepare(`SELECT * FROM escritorio_revendas WHERE empresa_id = ? AND modulo_chave IN (${chaves.map(() => "?").join(",")})`).all(empresaId, ...chaves) as any[];
+  return rows.find(revendaAtiva) || null;
+}
 function revendaPrecoBase(escritorioId: number, moduloChave: string): { precoBase: number; percentual: number } | null {
   const r = sqlite.prepare(`SELECT preco_base, percentual FROM escritorio_revenda_precos WHERE escritorio_id = ? AND modulo_chave = ?`).get(escritorioId, moduloChave) as any;
   return r ? { precoBase: Number(r.preco_base), percentual: Number(r.percentual) } : null;
@@ -24312,7 +24339,7 @@ function funcionalidadesVendidasPorRevenda(): string[] {
 }
 // Revenda paga, em dia e não cancelada — e o escritório ainda tem o próprio módulo (sem ele, não revende).
 function revendaAtiva(r: any): boolean {
-  return !!r && !r.cancelado_em && !!r.assinatura_ativa_ate && r.assinatura_ativa_ate >= agoraSqlRevenda() && escritorioTemModulo(r.escritorio_id, r.modulo_chave);
+  return !!r && !r.cancelado_em && !!r.assinatura_ativa_ate && r.assinatura_ativa_ate >= agoraSqlRevenda() && escritorioPodeRevender(r.escritorio_id, r.modulo_chave);
 }
 function funcionalidadesRevendaDaEmpresa(empresaId: number): string[] {
   const rows = sqlite
@@ -24361,7 +24388,7 @@ async function escritorioCobrarRevenda(escritorioId: number, revenda: any): Prom
   const escritorio = sqlite.prepare(`SELECT nome, cnpj, email, telefone, asaas_customer_id FROM escritorios WHERE id = ?`).get(escritorioId) as any;
   if (!escritorio?.cnpj) throw new Error("Cadastre o CNPJ do escritório em Dados de faturamento antes de gerar a cobrança.");
   const empresa = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(revenda.empresa_id) as any;
-  const modulo = sqlite.prepare(`SELECT nome FROM modulos_escritorio_catalogo WHERE chave = ?`).get(revenda.modulo_chave) as any;
+  const modulo = { nome: revendaNomeModulo(revenda.modulo_chave) };
   const valorTotal = Math.round(Number(revenda.valor_repasse) * 100) / 100;
   let cobranca = sqlite
     .prepare(
@@ -24377,7 +24404,8 @@ async function escritorioCobrarRevenda(escritorioId: number, revenda: any): Prom
   if (!cobranca) {
     const vencimento = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const brl = (v: number) => v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    const descricao = `Revenda — ${modulo?.nome || revenda.modulo_chave} para ${empresa?.nome || "cliente"} (${revenda.percentual}% de R$ ${brl(Number(revenda.valor_negociado))})`;
+    const pbRev = revendaPrecoBase(escritorioId, revenda.modulo_chave);
+    const descricao = `Revenda — ${modulo?.nome || revenda.modulo_chave} para ${empresa?.nome || "cliente"} (${revenda.percentual}% ${pbRev ? `do preço base de R$ ${brl(pbRev.precoBase)}` : `de R$ ${brl(Number(revenda.valor_negociado))}`})`;
     const gerada = await asaas.criarCobranca({ customerId, valor: valorTotal, vencimento, descricao });
     const info = sqlite
       .prepare(`INSERT INTO escritorio_licenca_cobrancas (escritorio_id, valor_total, vencimento, status, asaas_payment_id, invoice_url) VALUES (?, ?, ?, 'pendente', ?, ?)`)
@@ -24540,11 +24568,15 @@ app.get("/api/escritorio/revendas", blockCliente, requirePermissao("configuracoe
     const pb = revendaPrecoBase(escritorioId, m.chave);
     return { chave: m.chave, nome: m.nome, acesso: escritorioTemModulo(escritorioId, m.chave), precoBase: pb?.precoBase ?? null, percentual: pb?.percentual ?? null };
   });
+  for (const [chave, v] of Object.entries(REVENDA_MODULOS_CLIENTE)) {
+    const pb = revendaPrecoBase(escritorioId, chave);
+    modulos.push({ chave, nome: v.nome, acesso: escritorioPodeRevender(escritorioId, chave), precoBase: pb?.precoBase ?? null, percentual: pb?.percentual ?? null });
+  }
   const rows = sqlite
     .prepare(
       `SELECT r.*, e.nome as empresa_nome, e.cnpj as empresa_cnpj, c.nome as modulo_nome
-         FROM escritorio_revendas r JOIN empresas e ON e.id = r.empresa_id JOIN modulos_escritorio_catalogo c ON c.chave = r.modulo_chave
-        WHERE r.escritorio_id = ? ORDER BY e.nome, c.nome`
+         FROM escritorio_revendas r JOIN empresas e ON e.id = r.empresa_id LEFT JOIN modulos_escritorio_catalogo c ON c.chave = r.modulo_chave
+        WHERE r.escritorio_id = ? ORDER BY e.nome, r.modulo_chave`
     )
     .all(escritorioId) as any[];
   const isento = !!(sqlite.prepare(`SELECT isento_assinatura FROM escritorios WHERE id = ?`).get(escritorioId) as any)?.isento_assinatura;
@@ -24558,7 +24590,7 @@ app.get("/api/escritorio/revendas", blockCliente, requirePermissao("configuracoe
       empresaNome: r.empresa_nome,
       empresaCnpj: r.empresa_cnpj,
       moduloChave: r.modulo_chave,
-      moduloNome: r.modulo_nome,
+      moduloNome: r.modulo_nome || revendaNomeModulo(r.modulo_chave),
       valorNegociado: Number(r.valor_negociado),
       percentual: Number(r.percentual),
       valorRepasse: Number(r.valor_repasse),
@@ -24575,9 +24607,10 @@ app.post("/api/escritorio/revendas", blockCliente, requirePermissao("configuraco
   const moduloChave = String(req.body?.moduloChave || "");
   const empresa = sqlite.prepare(`SELECT id, escritorio_id FROM empresas WHERE id = ?`).get(empresaId) as any;
   if (!empresa || empresa.escritorio_id !== escritorioId || !podeAcessarEmpresa(user, empresaId)) return res.status(400).json({ error: "Selecione um cliente válido." });
-  const modulo = sqlite.prepare(`SELECT chave, nome FROM modulos_escritorio_catalogo WHERE chave = ? AND ativo = 1 AND funcionalidade_cliente IS NOT NULL`).get(moduloChave) as any;
+  const modulo = (sqlite.prepare(`SELECT chave, nome FROM modulos_escritorio_catalogo WHERE chave = ? AND ativo = 1 AND funcionalidade_cliente IS NOT NULL`).get(moduloChave) as any)
+    || (REVENDA_MODULOS_CLIENTE[moduloChave] ? { chave: moduloChave, nome: REVENDA_MODULOS_CLIENTE[moduloChave].nome } : null);
   if (!modulo) return res.status(400).json({ error: "Selecione um módulo revendável." });
-  if (!escritorioTemModulo(escritorioId, moduloChave)) return res.status(400).json({ error: `Seu escritório precisa ter o módulo ${modulo.nome} ativo pra revender — contrate acima.` });
+  if (!escritorioPodeRevender(escritorioId, moduloChave)) return res.status(400).json({ error: `Seu escritório precisa ter o módulo ${modulo.nome} ativo pra revender${REVENDA_MODULOS_CLIENTE[moduloChave] ? " — peça a liberação à Simples Contábeis" : " — contrate acima"}.` });
   const valor = Math.round(Number(String(req.body?.valorNegociado ?? "").replace(",", ".")) * 100) / 100;
   const geral = revendaRegras();
   const combinado = revendaPrecoBase(escritorioId, moduloChave);
@@ -24610,7 +24643,7 @@ app.post("/api/escritorio/revendas/:id/pagar", blockCliente, requirePermissao("c
   const escritorioId = (req as any).user.escritorioId;
   const revenda = sqlite.prepare(`SELECT * FROM escritorio_revendas WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), escritorioId) as any;
   if (!revenda) return res.status(404).json({ error: "Revenda não encontrada." });
-  if (!escritorioTemModulo(escritorioId, revenda.modulo_chave)) return res.status(400).json({ error: "Seu escritório precisa ter esse módulo ativo pra revender — contrate acima." });
+  if (!escritorioPodeRevender(escritorioId, revenda.modulo_chave)) return res.status(400).json({ error: "Seu escritório precisa ter esse módulo ativo pra revender — contrate acima." });
   sqlite.prepare(`UPDATE escritorio_revendas SET cancelado_em = NULL WHERE id = ?`).run(revenda.id);
   try {
     res.json({ revendaId: revenda.id, ...(await escritorioCobrarRevenda(escritorioId, revenda)) });
@@ -24631,7 +24664,7 @@ app.get("/api/super/revendas", requireSuperAdmin, (_req, res) => {
     .prepare(
       `SELECT r.*, e.nome as empresa_nome, o.nome as escritorio_nome, c.nome as modulo_nome
          FROM escritorio_revendas r JOIN empresas e ON e.id = r.empresa_id JOIN escritorios o ON o.id = r.escritorio_id
-         JOIN modulos_escritorio_catalogo c ON c.chave = r.modulo_chave ORDER BY o.nome, e.nome`
+         LEFT JOIN modulos_escritorio_catalogo c ON c.chave = r.modulo_chave ORDER BY o.nome, e.nome`
     )
     .all() as any[];
   res.json({
@@ -24640,7 +24673,7 @@ app.get("/api/super/revendas", requireSuperAdmin, (_req, res) => {
       id: r.id,
       escritorioNome: r.escritorio_nome,
       empresaNome: r.empresa_nome,
-      moduloNome: r.modulo_nome,
+      moduloNome: r.modulo_nome || revendaNomeModulo(r.modulo_chave),
       valorNegociado: Number(r.valor_negociado),
       percentual: Number(r.percentual),
       valorRepasse: Number(r.valor_repasse),

@@ -16175,6 +16175,8 @@ function assinaturaModuloCardHtml(item, semTesteGratis){
   // Sem vencimento (2099) = cortesia concedida pelo escritório — não cobra, não tem o que pagar.
   else if(item.status==='ativo'){ badgeClass='ok'; badgeText = semVencimento ? 'Cortesia' : 'Ativo até '+fmtDateIso(String(item.assinaturaAtivaAte||'').slice(0,10)); }
   else if(item.status==='vencido'){ badgeClass='bad'; badgeText='Assinatura vencida'; }
+  // Liberado pela revenda do escritório: o cliente paga o escritório, não a plataforma — sem checkbox de pagamento.
+  if(item.liberadoPeloEscritorio){ badgeClass='ok'; badgeText='Liberado pelo seu escritório'; }
   // Cliente direto (venda avulsa) não tem teste grátis — vai direto pro pagamento.
   // "Direto para pagamento" marcado pro cliente (já assinou contrato) também esconde o teste.
   const mostraBotaoTeste = item.status==='nao_contratado' && !semTesteGratis && !item.semTeste;
@@ -16188,12 +16190,12 @@ function assinaturaModuloCardHtml(item, semTesteGratis){
       <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
         <div>
           <div style="font-weight:600;">${esc(item.nome)}</div>
-          <div style="font-size:12.5px; color:var(--ink-soft);">${item.quantidade!=null?`${item.quantidade} × ${fmtMoney(item.valorUnitario)} = `:''}${fmtMoney(item.valorMensal)}/mês</div>
+          <div style="font-size:12.5px; color:var(--ink-soft);">${item.liberadoPeloEscritorio ? 'Contratado com o seu escritório de contabilidade' : `${item.quantidade!=null?`${item.quantidade} × ${fmtMoney(item.valorUnitario)} = `:''}${fmtMoney(item.valorMensal)}/mês`}</div>
           ${implantacaoDevida?`<div style="font-size:12.5px; color:var(--ink-soft);">+ ${fmtMoney(item.valorImplantacaoDevida)} de implantação (cobrança única)</div>`:''}
         </div>
         <div style="display:flex; align-items:center; gap:14px;">
           <span class="tag ${badgeClass}">${esc(badgeText)}</span>
-          ${item.status==='isento' || (item.status==='ativo' && semVencimento) ? '' : `
+          ${item.status==='isento' || item.liberadoPeloEscritorio || (item.status==='ativo' && semVencimento) ? '' : `
             ${mostraBotaoTeste?`<button class="btn small" data-acao="testar" data-chave="${item.chave}">Iniciar teste grátis</button>`:''}
             <label class="checkbox-row" style="margin:0;"><input type="checkbox" class="assinaturaCheck" data-chave="${item.chave}" data-valor="${valorCheckbox}" data-nome="${esc(item.nome)}"> ${rotuloCheckbox}</label>
           `}
