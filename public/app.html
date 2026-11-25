@@ -933,6 +933,14 @@ body.theme-glass .tab.active::after, body.theme-glass .nav-item.active::after{
 .rt-pulse{animation:rtPulse 1.6s ease-in-out infinite;}
 @keyframes rtPulse{0%,100%{opacity:1}50%{opacity:.62}}
 .rt-kpis{display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:10px; margin-bottom:14px;}
+/* Barra de progresso com efeito de água (validação na Calculadora da RFB) */
+.waterbar{position:relative; height:38px; border-radius:20px; background:rgba(120,140,160,.16); border:1px solid var(--rule); overflow:hidden; box-shadow:inset 0 2px 8px rgba(0,0,0,.22); max-width:620px; margin:0 auto;}
+.waterbar-fill{position:absolute; top:0; left:0; bottom:0; width:0; border-radius:20px; background:linear-gradient(90deg,#128a63,#2ECC8F,#56d9a6,#2ECC8F); background-size:300% 100%; animation:waterflow 2.4s linear infinite; box-shadow:0 0 20px rgba(46,204,143,.55); transition:width .9s cubic-bezier(.22,1,.36,1);}
+.waterbar-fill::before{content:""; position:absolute; inset:0; background:repeating-linear-gradient(115deg, rgba(255,255,255,.16) 0 14px, rgba(255,255,255,0) 14px 34px); animation:waterwave 1.6s linear infinite;}
+.waterbar-fill::after{content:""; position:absolute; top:0; right:-3px; width:12px; bottom:0; background:rgba(255,255,255,.4); filter:blur(5px);}
+.waterbar-pct{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:15px; color:#fff; letter-spacing:.03em; text-shadow:0 1px 4px rgba(0,0,0,.6); z-index:2;}
+@keyframes waterflow{from{background-position:0 0;} to{background-position:300% 0;}}
+@keyframes waterwave{from{transform:translateX(0);} to{transform:translateX(34px);}}
 .rt-kpi{background:var(--surface); border:1px solid var(--rule); border-radius:16px; padding:12px 14px; box-shadow:var(--shadow);}
 .rt-kpi-anel{display:flex; align-items:center; gap:10px; grid-column:span 2;}
 .rt-kpi-t{font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.05em;}
@@ -10895,7 +10903,7 @@ async function reformaRadMontar(painel, urlApi){
   }
   if(d.validacao && d.validacao.pendentes>0 && !d.validacao.erroApi && (painel._radTent||0) < 80){
     painel._radTent = (painel._radTent||0) + 1;
-    painel.innerHTML = intro + `<div class="card"><div class="empty-state">⏳ Conferindo na Calculadora oficial da RFB — faltam <b>${rtNum(d.validacao.pendentes)}</b> consulta(s).<br><span style="font-size:12.5px; color:var(--ink-soft);">O RAD aparece quando as classificações estiverem validadas.</span></div></div>`;
+    painel.innerHTML = intro + rtWaterBarHtml(rtPctValidacao(painel, d.validacao.pendentes), `💧 Conferindo as classificações na <b>Calculadora oficial da Receita Federal</b>…`, `Faltam <b>${rtNum(d.validacao.pendentes)}</b> consultas — o RAD aparece quando tudo estiver validado.`);
     setTimeout(()=>{ if(seq===RT_SEQ && STATE.page===paginaAtual && document.body.contains(painel)) reformaRadMontar(painel, urlApi); }, 3000);
     return;
   }
@@ -11122,11 +11130,25 @@ function radRecolhimentosHtml(arq){
   if(!linhas) return `<div class="empty-state" style="color:#0ca30c;">✔ Nenhum recolhimento (RAD) no período consultado.</div>`;
   return `<div class="tag ok">Recolhimentos (RAD)</div><table class="data-table" style="margin-top:6px;"><thead><tr><th>Período</th><th>Fornecedor</th><th>DARF</th><th style="text-align:right;">Total</th></tr></thead><tbody>${linhas}</tbody></table>`;
 }
+// Barra de progresso "efeito água" pro aguardo das consultas na Calculadora da RFB.
+function rtWaterBarHtml(pct, titulo, sub){
+  pct = Math.min(99, Math.max(3, Math.round(pct||0)));
+  return `<div class="card" style="padding:24px 20px;">
+    <div style="text-align:center; margin-bottom:16px; font-size:14.5px;">${titulo}</div>
+    <div class="waterbar"><div class="waterbar-fill" style="width:${pct}%;"></div><div class="waterbar-pct">${pct}%</div></div>
+    <div style="text-align:center; margin-top:14px; font-size:12.5px; color:var(--ink-soft);">${sub}</div>
+  </div>`;
+}
+function rtPctValidacao(painel, pend){
+  painel._rtTotalConsultas = Math.max(painel._rtTotalConsultas||0, pend);
+  const total = painel._rtTotalConsultas || pend || 1;
+  return (total - pend) / total * 100;
+}
 async function reformaMontar(painel, urlApi, urlPdf, silencioso){
   const seq = ++RT_SEQ;
   const paginaAtual = STATE.page;
   const direcaoRotulo = RT_ABA==='saidas' ? 'saída' : 'entrada';
-  if(!silencioso) painel._rtTentativas = 0;
+  if(!silencioso){ painel._rtTentativas = 0; painel._rtTotalConsultas = 0; }
   if(!silencioso) painel.innerHTML = `<div class="card"><div class="empty-state">⚖️ Auditando as notas de ${direcaoRotulo} — lendo cada XML item a item…</div></div>`;
   let d;
   try{ d = await api(urlApi); }
@@ -11149,7 +11171,7 @@ async function reformaMontar(painel, urlApi, urlPdf, silencioso){
   // parciais — mostra o progresso e tenta de novo (até ~4 min; depois mostra com o aviso de pendência).
   if(d.validacao.pendentes>0 && !d.validacao.erroApi && (painel._rtTentativas||0) < 80){
     painel._rtTentativas = (painel._rtTentativas||0) + 1;
-    painel.innerHTML = `<div class="card"><div class="empty-state">⏳ Conferindo na Calculadora oficial da RFB — faltam <b>${rtNum(d.validacao.pendentes)}</b> consulta(s).<br><span style="font-size:12.5px; color:var(--ink-soft);">A análise aparece quando todas as classificações estiverem validadas, para os valores saírem exatos. Pode levar alguns instantes.</span></div></div>`;
+    painel.innerHTML = rtWaterBarHtml(rtPctValidacao(painel, d.validacao.pendentes), `💧 Conferindo cada classificação na <b>Calculadora oficial da Receita Federal</b>…`, `Faltam <b>${rtNum(d.validacao.pendentes)}</b> consultas — a análise aparece quando tudo estiver validado, pros valores saírem exatos.`);
     setTimeout(()=>{ if(seq===RT_SEQ && STATE.page===paginaAtual && document.body.contains(painel)) reformaMontar(painel, urlApi, urlPdf, true); }, 3000);
     return;
   }
