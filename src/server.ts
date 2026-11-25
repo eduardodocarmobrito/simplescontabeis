@@ -12587,7 +12587,9 @@ function nfeListarDocumentosQuery(
           AND NOT EXISTS (SELECT 1 FROM nfe_documentos o WHERE o.empresa_id = d.empresa_id AND o.chave_acesso = d.chave_acesso AND o.tipo != 'evento'))`;
   // MDF-e não aparece na lista (pedido do escritório: não tem uso contábil). Continua sendo baixado e
   // guardado porque alimenta a flag "Transportadora (MDF-e)" das NF-e (mdfe_vinculos) e o "Ver detalhes do MDF-e".
-  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id IN (${placeholders})`, `d.tipo != 'mdfe'`, `(d.tipo != 'evento' OR ${eventoVisivel})`];
+  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id IN (${placeholders})`, `d.tipo != 'mdfe'`, `(d.tipo != 'evento' OR ${eventoVisivel})`,
+    // CT-e recebido em que a empresa não é a tomadora (frete pago por outro) não aparece — não é entrada dela.
+    `(d.tipo != 'cte' OR COALESCE(d.cte_tomador,'') = '' OR d.cte_tomador = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','') OR d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-',''))`];
   const params: any[] = [user.escritorioId, ...empresasIds];
   if (tipo) {
     condicoes.push(`d.tipo = ?`);
@@ -12816,7 +12818,8 @@ function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | nul
   // NFS-e) — antes contava só NF-e/NFC-e e CT-e emitido e escondia NFS-e/CT-e cancelados (achado 2026-11-25).
   const canceladasPorTipo: Record<string, number> = {};
   for (const c of sqlite
-    .prepare(`SELECT d.tipo, COUNT(*) n FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${whereDir.replace(`d.tipo IN ('nfe','nfce')`, `d.tipo IN ('nfe','nfce','cte','nfse')`)} AND ${canceladaExpr} GROUP BY d.tipo`)
+    .prepare(`SELECT d.tipo, COUNT(*) n FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${whereDir.replace(`d.tipo IN ('nfe','nfce')`, `d.tipo IN ('nfe','nfce','cte','nfse')`)} AND ${canceladaExpr}
+      AND (d.tipo != 'cte' OR COALESCE(d.cte_tomador,'') = '' OR d.cte_tomador = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','') OR ${emitExpr}) GROUP BY d.tipo`)
     .all(...params) as any[]) canceladasPorTipo[c.tipo] = c.n;
   // Perfil das Notas (estilo Espião): quantas notas têm cada marcador, dentro do mesmo período/escopo
   // já filtrado acima — reaproveita as colunas já cacheadas por parsearECachearTributos (flags/qtd_itens)
@@ -14441,6 +14444,21 @@ function cteTomadorDoc(xml: string): string | null {
   const tag = ({ "0": "rem", "1": "exped", "2": "receb", "3": "dest" } as Record<string, string>)[String(t)];
   return tag ? docDe(tag) : null;
 }
+// Tomador do CT-e guardado na própria linha (cte_tomador) — a lista da Busca de XML esconde, nas notas
+// RECEBIDAS, o CT-e em que a empresa não é a tomadora (frete pago por outro: não é entrada dela; pedido
+// 2026-11-25). Preenche em segundo plano: os antigos de uma vez em lotes e os novos a cada minuto.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(nfe_documentos)`).all() as any[];
+  if (!cols.some((c) => c.name === "cte_tomador")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN cte_tomador TEXT`);
+}
+function cteTomadorPreencher(limite = 2000): number {
+  const rows = sqlite.prepare(`SELECT id, xml FROM nfe_documentos WHERE tipo = 'cte' AND cte_tomador IS NULL LIMIT ?`).all(limite) as any[];
+  const upd = sqlite.prepare(`UPDATE nfe_documentos SET cte_tomador = ? WHERE id = ?`);
+  for (const r of rows) upd.run(cteTomadorDoc(r.xml) || "", r.id); // "" = não identificado (fica visível)
+  return rows.length;
+}
+setTimeout(() => { try { let n = 0, lote = 0; do { lote = cteTomadorPreencher(); n += lote; } while (lote > 0 && n < 50000); if (n) console.log(`[CT-e] tomador preenchido em ${n} documento(s).`); } catch (e: any) { console.error("[CT-e tomador]", e.message); } }, 20_000);
+setInterval(() => { try { cteTomadorPreencher(500); } catch {} }, 60_000);
 async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, res: express.Response): Promise<any> {
   const empresa = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(empresaId) as any;
   if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
