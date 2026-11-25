@@ -3863,7 +3863,7 @@ function cardDetalheModal(c){
       if(!confirmar('Consultar a Caixa Postal do e-CAC de todas as empresas habilitadas agora?')) return;
       caixaPostalConsultouNestaSessao = true;
       cpBtn.disabled = true; const txt0 = cpBtn.textContent; cpBtn.textContent = 'Consultando…';
-      cpMsg.style.color = 'var(--ink-soft)'; cpMsg.textContent = 'Consultando no e-CAC via Integra Contador — pode levar alguns minutos…';
+      cpMsg.style.color = 'var(--ink-soft)'; cpMsg.innerHTML = rtWaterBarInlineHtml('Consultando no e-CAC via Integra Contador — pode levar alguns minutos…');
       try{
         const [r, rg] = await Promise.all([
           api('/integracontador/caixapostal/consultar', { method:'POST' }).catch(e=>({ falha:e.message })),
@@ -9229,7 +9229,7 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
       const btn = containerEl.querySelector(`#btnNfeBuscarAgora_${empresaId}`);
       const resultado = containerEl.querySelector(`#nfeBuscaResultado_${empresaId}`);
       btn.disabled = true; btn.textContent = 'Buscando…';
-      resultado.innerHTML = `<div class="empty-state">Consultando a Sefaz e o Sistema Nacional NFS-e…</div>`;
+      resultado.innerHTML = rtWaterBarInlineHtml('Consultando a Sefaz e o Sistema Nacional NFS-e…');
       try{
         const r = await api('/nfe/config/'+empresaId+'/buscar', { method:'POST' });
         const partes = [`${r.novosNfe} NF-e/NFC-e`, `${r.novosCte} CT-e`, `${r.novosNfse} NFS-e`, `${r.novosMdfe} MDF-e`];
@@ -9362,7 +9362,7 @@ function ligarBuscarAgoraNfe(containerEl, empresaId, opts, meta){
     const btn = containerEl.querySelector(`#btnNfeBuscarAgora_${empresaId}`);
     const resultado = containerEl.querySelector(`#nfeBuscaResultado_${empresaId}`);
     btn.disabled = true; btn.textContent = viaExtrato ? 'Sincronizando…' : 'Buscando…';
-    resultado.innerHTML = `<div class="empty-state">${viaExtrato ? 'Sincronizando com o Extrato NFE…' : 'Consultando a Sefaz e o Sistema Nacional NFS-e…'}</div>`;
+    resultado.innerHTML = rtWaterBarInlineHtml(viaExtrato ? 'Sincronizando com o Extrato NFE…' : 'Consultando a Sefaz e o Sistema Nacional NFS-e…');
     try{
       const r = await api('/nfe/config/'+empresaId+'/buscar', { method:'POST' });
       if(r.viaExtratoNfe){
@@ -11154,6 +11154,10 @@ function rtWaterBarIndetHtml(titulo, sub){
     <div class="waterbar waterbar-indet"><div class="waterbar-fill"></div></div>
     ${sub?`<div style="text-align:center; margin-top:14px; font-size:12.5px; color:var(--ink-soft);">${sub}</div>`:''}
   </div>`;
+}
+// Barra de água compacta (inline, sem card) pra áreas de resultado menores.
+function rtWaterBarInlineHtml(titulo){
+  return `<div style="padding:2px 0;">${titulo?`<div style="font-size:12.5px; margin-bottom:8px; color:var(--ink-soft);">${titulo}</div>`:''}<div class="waterbar waterbar-indet" style="height:26px; max-width:none;"><div class="waterbar-fill"></div></div></div>`;
 }
 async function reformaMontar(painel, urlApi, urlPdf, silencioso){
   const seq = ++RT_SEQ;
@@ -22161,7 +22165,7 @@ async function obrigacoesMontar(box, setor){
   setor = setor || 'dprh';
   const norm = s=>(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
   if(!OBR.competencia){ const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()-1); OBR.competencia = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
-  box.innerHTML = `<div class="empty-state">Carregando o quadro…</div>`;
+  box.innerHTML = rtWaterBarIndetHtml('⏳ Carregando o quadro de obrigações do mês…', 'Conferindo o status de cada obrigação…');
   let r; try{ r = await api('/obrigacoes?setor='+encodeURIComponent(setor)+'&competencia='+OBR.competencia); }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
   const podeEditar = can('obrigacoes','editar'); // permissão dedicada pra marcar manualmente (módulo "Obrigações do Mês")
   setTimeout(()=>{ const bv = document.getElementById('obrVoltar'); if(bv) bv.addEventListener('click', ()=>{ DASH_TAB = OBR_VOLTAR_DASH || 'pendentes'; OBR_VOLTAR_DASH = null; goPage('dashboard'); }); }, 0);
