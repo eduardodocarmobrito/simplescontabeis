@@ -13,7 +13,7 @@ export interface ConfigEscritorio {
   clientes: number; colaboradores: number;
   baseMensal: number; baseDescontoPct: number; baseIsento: boolean;
   assentoValor: number; assentoDescontoPct: number; assentoIsento: boolean; modulos: ModuloProposta[];
-  descontoPct: number; implantacao: number; implantacaoDescontoPct: number; implantacaoIsenta: boolean; validadeDias: number; observacoes: string;
+  descontoPct: number; implantacao: number; implantacaoDescontoPct: number; implantacaoIsenta: boolean; implantacaoParcelas: number; validadeDias: number; observacoes: string;
   salarioColaborador: number; horasPorCliente: number; gastoSistemasAtual: number; adesaoRevendaPct: number; ticketRevenda: number;
 }
 
@@ -97,7 +97,7 @@ export function configPadrao(catalogo: any[], ticketRevenda: number): ConfigEscr
   return {
     escritorio: { nome: "", cnpj: "", cidade: "", uf: "", responsavel: "", cpfResponsavel: "", email: "", telefone: "" },
     clientes: 100, colaboradores: 5, baseMensal, baseDescontoPct: 0, baseIsento: false, assentoValor, assentoDescontoPct: 0, assentoIsento: false, modulos,
-    descontoPct: 0, implantacao: implantacaoSugerida(100), implantacaoDescontoPct: 0, implantacaoIsenta: false, validadeDias: 30, observacoes: "",
+    descontoPct: 0, implantacao: implantacaoSugerida(100), implantacaoDescontoPct: 0, implantacaoIsenta: false, implantacaoParcelas: 1, validadeDias: 30, observacoes: "",
     salarioColaborador: SALARIO_COLABORADOR_PADRAO, horasPorCliente: horasSugeridas(modulos), gastoSistemasAtual: 0, adesaoRevendaPct: 10, ticketRevenda: r2(ticketRevenda || 49.99),
   };
 }
@@ -121,6 +121,7 @@ export function normalizarConfig(c: any, base: ConfigEscritorio): ConfigEscritor
     assentoValor: r2(n(c?.assentoValor, base.assentoValor)), assentoDescontoPct: r2(n(c?.assentoDescontoPct, base.assentoDescontoPct || 0, 0, 100)), assentoIsento: c?.assentoIsento !== undefined ? !!c.assentoIsento : !!base.assentoIsento, modulos,
     descontoPct: r2(n(c?.descontoPct, base.descontoPct, 0, 100)), implantacao: r2(n(c?.implantacao, base.implantacao)),
     implantacaoDescontoPct: r2(n(c?.implantacaoDescontoPct, base.implantacaoDescontoPct || 0, 0, 100)), implantacaoIsenta: c?.implantacaoIsenta !== undefined ? !!c.implantacaoIsenta : !!base.implantacaoIsenta,
+    implantacaoParcelas: Math.round(n(c?.implantacaoParcelas, base.implantacaoParcelas || 1, 1, 48)),
     validadeDias: Math.round(n(c?.validadeDias, base.validadeDias, 1, 365)), observacoes: s(c?.observacoes, base.observacoes, 2000),
     salarioColaborador: r2(n(c?.salarioColaborador, base.salarioColaborador)), horasPorCliente: r2(n(c?.horasPorCliente, base.horasPorCliente, 0, 100)),
     gastoSistemasAtual: r2(n(c?.gastoSistemasAtual, base.gastoSistemasAtual)), adesaoRevendaPct: r2(n(c?.adesaoRevendaPct, base.adesaoRevendaPct, 0, 100)), ticketRevenda: r2(n(c?.ticketRevenda, base.ticketRevenda)),
@@ -178,6 +179,20 @@ const brl0 = (v: number) => "R$ " + Math.round(Number(v || 0)).toLocaleString("p
 const num = (v: number) => Number(v || 0).toLocaleString("pt-BR", { maximumFractionDigits: 1 });
 const dataBR = (iso: string) => iso.slice(0, 10).split("-").reverse().join("/");
 
+// Parcelamento da implantação em N parcelas iguais; a última ajusta o centavo da divisão.
+export function parcelasImplantacao(total: number, parcelas: number) {
+  const n = Math.max(1, Math.round(parcelas || 1));
+  if (n <= 1 || total <= 0) return { n: 1, valor: r2(total), ultima: r2(total), uniforme: true };
+  const base = Math.floor((total * 100) / n) / 100;
+  const ultima = r2(total - base * (n - 1));
+  return { n, valor: r2(base), ultima, uniforme: Math.abs(base - ultima) < 0.005 };
+}
+export function parcelasTexto(total: number, parcelas: number) {
+  const p = parcelasImplantacao(total, parcelas);
+  if (p.n <= 1) return "";
+  return p.uniforme ? `${p.n}× de ${brl(p.valor)}` : `${p.n}×: ${p.n - 1}× de ${brl(p.valor)} e 1× de ${brl(p.ultima)}`;
+}
+
 export function htmlPropostaEscritorio(c: ConfigEscritorio, meta: { numero: string; data: string }, timbrado: string | null) {
   const v = calcularValores(c);
   const e = c.escritorio;
@@ -229,7 +244,7 @@ ${ganhos.map((g: any, i: number) => `<div class="eco${g.q ? "" : " q"}"><div cla
   ${v.itens.map((i) => `<tr><td>${esc(i.nome)}</td><td class="num">${brl(i.tabela)}</td><td class="num ok">${i.isento ? "isento" : i.descontoPct ? `${String(i.descontoPct).replace(".", ",")}%` : "—"}</td><td class="num">${i.isento ? "<b>isento</b>" : brl(i.final)}</td></tr>`).join("")}
   ${v.descontoGeral ? `<tr><td colspan="3">Subtotal</td><td class="num">${brl(v.subtotal)}</td></tr><tr><td colspan="3"><b>Desconto especial (${String(c.descontoPct).replace(".", ",")}%)</b></td><td class="num ok">− ${brl(v.descontoGeral)}</td></tr>` : ""}
   <tr class="total"><td colspan="3">Mensalidade${v.descontoValor ? ` <span style="font-size:9px; font-weight:600; color:#1f6e43;">(economia de ${brl(v.descontoValor)}/mês sobre a tabela de ${brl(v.mensalBruto)})</span>` : ""}</td><td class="num">${brl(v.mensal)}/mês</td></tr>
-  <tr><td>Implantação, cobrada uma vez: configuração do escritório, importação das empresas e contatos, configuração dos robôs e dos envios, e treinamento da equipe</td><td class="num">${brl(c.implantacao)}</td><td class="num ok">${c.implantacaoIsenta ? "isenta" : c.implantacaoDescontoPct ? `${String(c.implantacaoDescontoPct).replace(".", ",")}%` : "—"}</td><td class="num">${v.implantacaoFinal ? brl(v.implantacaoFinal) : "<b>isenta</b>"}</td></tr>
+  <tr><td>Implantação, cobrada uma vez: configuração do escritório, importação das empresas e contatos, configuração dos robôs e dos envios, e treinamento da equipe${c.implantacaoParcelas > 1 && v.implantacaoFinal ? ` <b>— parcelada em ${parcelasTexto(v.implantacaoFinal, c.implantacaoParcelas)}</b>` : ""}</td><td class="num">${brl(c.implantacao)}</td><td class="num ok">${c.implantacaoIsenta ? "isenta" : c.implantacaoDescontoPct ? `${String(c.implantacaoDescontoPct).replace(".", ",")}%` : "—"}</td><td class="num">${v.implantacaoFinal ? brl(v.implantacaoFinal) : "<b>isenta</b>"}</td></tr>
 </table></div>
 <table class="t" style="break-inside:avoid">
   <thead><tr><th>Retorno no 1º ano</th><th class="num" style="width:24%">Valor</th></tr></thead>
@@ -341,6 +356,6 @@ export function anexoModulosHtml(c: ConfigEscritorio) {
   const linhas = v.itens.map((i) => `<tr><td>${i.chave === "plataforma_base" ? `Plataforma base (${FUNCIONALIDADES_BASE.map((x) => esc(x.titulo)).join("; ")})` : esc(i.nome)}</td><td>${f(i.tabela)}</td><td>${i.isento ? "Isento" : i.descontoPct ? `${String(i.descontoPct).replace(".", ",")}%` : "—"}</td><td>${i.isento ? "Isento" : f(i.final)}</td></tr>`);
   if (v.descontoGeral) linhas.push(`<tr><td colspan="3">Desconto especial sobre o total (${String(c.descontoPct).replace(".", ",")}%)</td><td>− ${f(v.descontoGeral)}</td></tr>`);
   linhas.push(`<tr><td colspan="3"><b>Mensalidade total</b></td><td><b>${f(v.mensal)}</b></td></tr>`);
-  linhas.push(`<tr><td>Implantação (valor único)</td><td>${f(c.implantacao)}</td><td>${c.implantacaoIsenta ? "Isenta" : c.implantacaoDescontoPct ? `${String(c.implantacaoDescontoPct).replace(".", ",")}%` : "—"}</td><td>${v.implantacaoFinal ? f(v.implantacaoFinal) : "Isenta"}</td></tr>`);
+  linhas.push(`<tr><td>Implantação (valor único)${c.implantacaoParcelas > 1 && v.implantacaoFinal ? ` — parcelada em ${parcelasTexto(v.implantacaoFinal, c.implantacaoParcelas)}` : ""}</td><td>${f(c.implantacao)}</td><td>${c.implantacaoIsenta ? "Isenta" : c.implantacaoDescontoPct ? `${String(c.implantacaoDescontoPct).replace(".", ",")}%` : "—"}</td><td>${v.implantacaoFinal ? f(v.implantacaoFinal) : "Isenta"}</td></tr>`);
   return `<table class="dados"><thead><tr><th>Item contratado</th><th>Valor de tabela</th><th>Desconto</th><th>Valor contratado</th></tr></thead><tbody>${linhas.join("")}</tbody></table>`;
 }

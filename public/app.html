@@ -17180,7 +17180,7 @@ async function renderPropostaEscritorio(id){
             <td><input type="text" id="peAssento" value="${esc(propMoedaTxt(c.assentoValor))}" ${dis} style="width:120px;"></td>
             <td><input type="text" id="peAssentoDesc" value="${esc(String(c.assentoDescontoPct||0).replace('.',','))}" ${dis} style="width:80px;"></td>
             <td><input type="checkbox" id="peAssentoIsento" ${c.assentoIsento?'checked':''} ${dis}></td><td style="text-align:right;" class="peFinal" data-k="assento_colaborador"></td></tr>
-          <tr><td><input type="checkbox" checked disabled></td><td><b>Implantação</b><div style="font-size:11.5px; color:var(--ink-soft);">valor único · sugestão ${propBRL(P.sugestoes.implantacao)} (R$ 1.500 + R$ 10 por cliente)</div></td>
+          <tr><td><input type="checkbox" checked disabled></td><td><b>Implantação</b><div style="font-size:11.5px; color:var(--ink-soft);">valor único · sugestão ${propBRL(P.sugestoes.implantacao)} (R$ 1.500 + R$ 10 por cliente)</div><div style="font-size:11.5px; color:var(--ink-soft); margin-top:5px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">Parcelar em <input type="number" id="peImplParcelas" min="1" max="48" value="${c.implantacaoParcelas||1}" ${dis} style="width:56px; padding:5px 7px; border:1px solid var(--rule); border-radius:8px; background:var(--paper); color:var(--ink); font-size:13px;"> vez(es) <span id="peImplParcelaInfo"></span></div></td>
             <td><input type="text" id="peImplantacao" value="${esc(propMoedaTxt(c.implantacao))}" ${dis} style="width:120px;"></td>
             <td><input type="text" id="peImplDesc" value="${esc(String(c.implantacaoDescontoPct||0).replace('.',','))}" ${dis} style="width:80px;"></td>
             <td><input type="checkbox" id="peImplIsenta" ${c.implantacaoIsenta?'checked':''} ${dis}></td><td style="text-align:right;" id="peImplFinal"></td></tr>
@@ -17214,7 +17214,7 @@ async function renderPropostaEscritorio(id){
     baseMensal: propNum(val('peBase')), baseDescontoPct: pct(val('peBaseDesc')), baseIsento: document.getElementById('peBaseIsento').checked,
     assentoValor: propNum(val('peAssento')), assentoDescontoPct: pct(val('peAssentoDesc')), assentoIsento: document.getElementById('peAssentoIsento').checked,
     modulos: c.modulos.map((m,i)=>({ chave:m.chave, nome:m.nome, incluido: document.querySelector(`.peModChk[data-i="${i}"]`).checked, valor: propNum(document.querySelector(`.peModVal[data-i="${i}"]`).value), descontoPct: pct(document.querySelector(`.peModDesc[data-i="${i}"]`).value), isento: document.querySelector(`.peModIsento[data-i="${i}"]`).checked })),
-    descontoPct: pct(val('peDesconto')), implantacao: propNum(val('peImplantacao')), implantacaoDescontoPct: pct(val('peImplDesc')), implantacaoIsenta: document.getElementById('peImplIsenta').checked, validadeDias: Math.max(1, Math.round(propNum(val('peValidade')))||30),
+    descontoPct: pct(val('peDesconto')), implantacao: propNum(val('peImplantacao')), implantacaoDescontoPct: pct(val('peImplDesc')), implantacaoIsenta: document.getElementById('peImplIsenta').checked, implantacaoParcelas: Math.min(48, Math.max(1, Math.round(propNum(val('peImplParcelas')))||1)), validadeDias: Math.max(1, Math.round(propNum(val('peValidade')))||30),
     horasPorCliente: propNum(val('peHoras')), salarioColaborador: propNum(val('peSalario')), gastoSistemasAtual: propNum(val('peSistemas')),
     adesaoRevendaPct: Math.min(100, Math.max(0, propNum(val('peAdesao')))), ticketRevenda: propNum(val('peTicket')), observacoes: val('peObs'),
   });
@@ -17238,10 +17238,12 @@ async function renderPropostaEscritorio(id){
       td.innerHTML = !i ? '<span style="color:var(--ink-soft);">fora</span>' : i.final===0 && i.tabela>0 ? '<span class="tag ok">isento</span>' : `<b>${propBRL(i.final)}</b>${i.final<i.tabela?`<div style="font-size:11px; color:var(--ink-soft); text-decoration:line-through;">${propBRL(i.tabela)}</div>`:''}`;
     });
     document.getElementById('peImplFinal').innerHTML = cfg.implantacaoIsenta || !v.implantacaoFinal ? '<span class="tag ok">isenta</span>' : `<b>${propBRL(v.implantacaoFinal)}</b>${v.implantacaoFinal<cfg.implantacao?`<div style="font-size:11px; color:var(--ink-soft); text-decoration:line-through;">${propBRL(cfg.implantacao)}</div>`:''}`;
+    const nParc = cfg.implantacaoParcelas||1, pInfo = document.getElementById('peImplParcelaInfo');
+    if(pInfo) pInfo.innerHTML = (nParc>1 && v.implantacaoFinal) ? `→ <b style="color:var(--accent-deep);">${nParc}× de ${propBRL(Math.floor(v.implantacaoFinal*100/nParc)/100)}</b>` : (nParc>1 ? '' : '<span style="color:var(--ink-soft);">(à vista)</span>');
     document.getElementById('peResumo').innerHTML =
       item('Mensalidade de tabela', propBRL(v.mensalBruto)) +
       item('Descontos e isenções', v.descontoValor ? '− '+propBRL(v.descontoValor) : 'sem desconto') + item('Mensalidade final', propBRL(v.mensal), 'var(--accent-deep)') +
-      item('Implantação', v.implantacaoFinal ? propBRL(v.implantacaoFinal) : 'isenta') + item('Resultado no 1º ano', propBRL0(v.liquido), v.liquido>=0?'var(--accent-deep)':'var(--debit)');
+      item('Implantação', v.implantacaoFinal ? (propBRL(v.implantacaoFinal) + (cfg.implantacaoParcelas>1?` <span style="font-size:11px; font-weight:600; color:var(--ink-soft);">em ${cfg.implantacaoParcelas}×</span>`:'')) : 'isenta') + item('Resultado no 1º ano', propBRL0(v.liquido), v.liquido>=0?'var(--accent-deep)':'var(--debit)');
   };
   desenha();
   box.querySelectorAll('input, textarea').forEach(i=>i.addEventListener(i.type==='checkbox'?'change':'input', desenha));
