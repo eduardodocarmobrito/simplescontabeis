@@ -9308,8 +9308,9 @@ async function renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNo
   const regExtrato = NFE_EXTRATO && NFE_EXTRATO.ativo && (NFE_EXTRATO.empresas||[]).find(e=>e.empresaId===Number(empresaId) && e.ativo);
   // Com a busca pelo Extrato NFE ligada, o "Buscar agora" entra direto na faixa, ao lado do botão
   // "Voltar pra busca própria" — mais compacto do que uma linha própria embaixo.
+  const labelBuscar = regExtrato ? '🔄 Sincronizar com o Extrato NFE' : 'Buscar agora';
   const btnBuscarAgoraHtml = podePostar
-    ? `<button class="btn primary" id="btnNfeBuscarAgora_${empresaId}" ${(moduloAtivo&&(regExtrato||(cfg&&cfg.ativo)))?'':'disabled'}>Buscar agora</button>`
+    ? `<button class="btn primary" id="btnNfeBuscarAgora_${empresaId}" ${(moduloAtivo&&(regExtrato||(cfg&&cfg.ativo)))?'':'disabled'}>${labelBuscar}</button>`
     : '';
   const faixaExtrato = extratoNfeFaixaEmpresaHtml(empresaId, regExtrato?btnBuscarAgoraHtml:'');
   const refazer = ()=>renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNome, opts);
@@ -9318,7 +9319,7 @@ async function renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNo
       ? `<div id="nfeBuscaResultado_${empresaId}" style="margin-top:10px;"></div>`
       : `<div class="empty-state">Nenhum certificado configurado ainda — envie em Empresas → ${esc(empresaNome||'')} → Configurações.</div>`);
     ligarExtratoNfeFaixaEmpresa(containerEl, empresaId, refazer);
-    if(regExtrato && podePostar) ligarBuscarAgoraNfe(containerEl, empresaId, opts);
+    if(regExtrato && podePostar) ligarBuscarAgoraNfe(containerEl, empresaId, opts, { viaExtrato:true, label:labelBuscar });
     return cfg;
   }
   // Com busca própria pausada (regExtrato), o quadro do certificado só repetiria dados que já não
@@ -9340,15 +9341,17 @@ async function renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNo
     </div>
   `) + `<div id="nfeBuscaResultado_${empresaId}" style="margin-top:10px;"></div>`;
   ligarExtratoNfeFaixaEmpresa(containerEl, empresaId, refazer);
-  if(podePostar) ligarBuscarAgoraNfe(containerEl, empresaId, opts);
+  if(podePostar) ligarBuscarAgoraNfe(containerEl, empresaId, opts, { viaExtrato:!!regExtrato, label:labelBuscar });
   return cfg;
 }
-function ligarBuscarAgoraNfe(containerEl, empresaId, opts){
+function ligarBuscarAgoraNfe(containerEl, empresaId, opts, meta){
+  meta = meta || {};
+  const viaExtrato = !!meta.viaExtrato, labelBtn = meta.label || 'Buscar agora';
   containerEl.querySelector(`#btnNfeBuscarAgora_${empresaId}`)?.addEventListener('click', async ()=>{
     const btn = containerEl.querySelector(`#btnNfeBuscarAgora_${empresaId}`);
     const resultado = containerEl.querySelector(`#nfeBuscaResultado_${empresaId}`);
-    btn.disabled = true; btn.textContent = 'Buscando…';
-    resultado.innerHTML = `<div class="empty-state">Consultando a Sefaz e o Sistema Nacional NFS-e…</div>`;
+    btn.disabled = true; btn.textContent = viaExtrato ? 'Sincronizando…' : 'Buscando…';
+    resultado.innerHTML = `<div class="empty-state">${viaExtrato ? 'Sincronizando com o Extrato NFE…' : 'Consultando a Sefaz e o Sistema Nacional NFS-e…'}</div>`;
     try{
       const r = await api('/nfe/config/'+empresaId+'/buscar', { method:'POST' });
       if(r.viaExtratoNfe){
@@ -9365,7 +9368,7 @@ function ligarBuscarAgoraNfe(containerEl, empresaId, opts){
     }catch(e){
       resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
     }finally{
-      btn.disabled = false; btn.textContent = 'Buscar agora';
+      btn.disabled = false; btn.textContent = labelBtn;
     }
   });
 }
@@ -10985,7 +10988,7 @@ function rtPainelHtml(d, urlPdf){
     ${S ? tile('Vendas auditadas', rtBRL(k.valorCompras), `${rtNum(k.fornecedores)} destinatário(s)`) : tile('Compras auditadas', rtBRL(k.valorCompras), `${rtNum(k.fornecedores)} fornecedores · ${rtNum(k.fornecedoresComPendencia)} com ponto de atenção`)}
     ${tile('IBS/CBS destacado', rtBRL(k.ibs + k.cbs), `CBS ${rtBRL(k.cbs)} · IBS ${rtBRL(k.ibs)} · ${rtNum(k.notasComGrupo)} de ${rtNum(k.notas)} notas com o grupo`)}
     ${S ? tile('Notas sem IBS/CBS', rtNum(k.notas - k.notasComGrupo), (k.notas - k.notasComGrupo) ? '<span style="color:#d03b3b;">⛔ grupo obrigatório não informado</span>' : 'todas com o grupo IBS/CBS', true) : tile(e.tomaCredito?'Crédito aproveitável':'Crédito (se optasse)', rtBRL(k.creditoAproveitavel), k.creditoRisco>0?`<span style="color:#d03b3b;">⛔ ${rtBRL(k.creditoRisco)} em risco de glosa</span>`:'nenhum valor em risco de glosa')}
-    ${S ? tile('Itens a corrigir', rtNum(k.itens - k.itensConformes), `de ${rtNum(k.itens)} itens emitidos`) : tile('Crédito 2027 em jogo', rtBRL(k.perda2027Anual)+'<span class="rt-kpi-un">/ano</span>', `estimativa anualizada com CBS de ${String(d.fontes.cbs2027Estimada).replace('.',',')}% (Simples por dentro, MEI e fornecedores sem destaque)`, true)}
+    ${S ? tile('Itens a corrigir', rtNum(k.itens - k.itensConformes), `de ${rtNum(k.itens)} itens emitidos`) : tile(d.empresa.tomaCredito ? 'Crédito 2027 em jogo' : 'Crédito 2027 em jogo (se tomasse crédito)', rtBRL(k.perda2027Anual)+'<span class="rt-kpi-un">/ano</span>', `estimativa anualizada com CBS de ${String(d.fontes.cbs2027Estimada).replace('.',',')}% (Simples por dentro, MEI e fornecedores sem destaque)`, true)}
     ${tile('NCM vencido', rtNum(k.ncmsVencidos), k.ncmsVencidos?'<span style="color:#d03b3b;">⛔ código(s) extinto(s) na data da emissão</span>':'todos os NCM vigentes na emissão')}
   </div>
 
