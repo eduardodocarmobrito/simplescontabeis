@@ -33,7 +33,10 @@ const TABELA = JSON.parse(fs.readFileSync(path.join(__dirname, "reforma-tabelas"
   fonte: string; cclasstrib: ClassTrib[]; cst: { cst: string; descricao: string; gIBSCBS: boolean; gIBSCBSMono: boolean; gRed: boolean; gDif: boolean }[];
 };
 const NCM_BASE = JSON.parse(fs.readFileSync(path.join(__dirname, "reforma-tabelas", "ncm-vigentes.json"), "utf8")) as { fonte: string; data: string; ncms: [string, string][] };
-const CLASS = new Map<string, ClassTrib>(TABELA.cclasstrib.map((c) => [c.cClassTrib, c]));
+// "anexo" válido é só 1..15 (Anexos da LC 214); a planilha oficial traz lixo em alguns (ex.: 81971, 90281,
+// 91721 — datas do Excel), que faziam a auditoria consultar NCM × anexo inexistente e acusar NCM_FORA_ANEXO.
+const anexoValido = (a: any) => (/^(?:[1-9]|1[0-5])$/.test(String(a ?? "").trim()) ? String(a).trim() : null);
+const CLASS = new Map<string, ClassTrib>(TABELA.cclasstrib.map((c) => [c.cClassTrib, { ...c, anexo: anexoValido(c.anexo) }]));
 const CSTS = new Map(TABELA.cst.map((c) => [c.cst, c]));
 // A API devolve a descrição com marcação HTML (ex.: "<i>pellets</i>", "cm<sup>2</sup>") — guarda só o texto.
 const textoNcm = (s: any) => String(s || "").replace(/<sup>(\d+)<\/sup>/gi, "$1").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().slice(0, 120);
@@ -351,10 +354,11 @@ export function textoMemoria2027(m: { meses: number; de: string; ate: string; cb
     if (l.situacao === "com_destaque") out.push(`Com IBS/CBS destacado (${it(l.itens)}): base ${brl(l.base)} — crédito integral de ${brl(l.ref)}, nada em jogo.`);
     else if (l.situacao === "sem_destaque") out.push(`Sem o grupo IBS/CBS na nota (${it(l.itens)}): base ${brl(l.base)} × ${aliqTxt(l)} = ${brl(l.ref)} de crédito que não seria tomado.`);
     else if (l.situacao === "sn_dentro") out.push(`Simples com IBS/CBS no DAS (${it(l.itens)}): crédito no regime normal ${brl(l.base)} × ${aliqTxt(l)} = ${brl(l.ref)}; crédito permitido pelo Simples ${brl(l.aprov)}; diferença ${brl(l.perda)}.`);
-    else out.push(`Fornecedor sem direito a gerar crédito (MEI ou Simples sem regime informado) (${it(l.itens)}): base ${brl(l.base)} × ${aliqTxt(l)} = ${brl(l.ref)} de crédito que não seria tomado.`);
+    else out.push(`MEI ou Simples sem regime de IBS/CBS informado (${it(l.itens)}): crédito no regime normal ${brl(l.base)} × ${aliqTxt(l)} = ${brl(l.ref)}; o crédito limitado ao valor pago no DAS não é informado na nota e foi considerado zero.`);
   }
-  out.push(`Total no período de ${data(m.de)} a ${data(m.ate)} (${m.meses} ${m.meses === 1 ? "mês" : "meses"}): ${brl(m.perdaPeriodo)}.`);
-  out.push(`Por ano: ${brl(m.perdaPeriodo)} ÷ ${m.meses} × 12 = ${brl(perdaAnual)}. Premissa: compras no mesmo ritmo do período e fornecedor emitindo como hoje.`);
+  const mesesTxt = m.meses.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+  out.push(`Total no período de ${data(m.de)} a ${data(m.ate)} (${mesesTxt} ${m.meses === 1 ? "mês" : "meses"}): ${brl(m.perdaPeriodo)}.`);
+  out.push(`Por ano: ${brl(m.perdaPeriodo)} ÷ ${mesesTxt} × 12 = ${brl(perdaAnual)}. Premissa: compras no mesmo ritmo do período e fornecedor emitindo como hoje.`);
   return out;
 }
 export const REDUCOES_ANEXO_SEM_GRUPO = ["200003", "200014", "200004", "200007", "200030", "200031", "200033", "200034", "200035", "200038", "200039"];
@@ -584,7 +588,17 @@ export function auditarNota(nota: NotaRT, consultaNcm: ConsultaNcm, consultaVige
       const pCBSano = aliq.pCBS ?? CBS_2027_ESTIMADA;
       cred.referencia += (vBCref * (pCBSano * (1 - pRedCBS / 100) + (aliq.pIBSUF + aliq.pIBSMun) * (1 - pRedIBS / 100))) / 100;
     }
-    const ref27 = regime === "pf" ? 0 : (vBCref * (CBS_2027_ESTIMADA * (1 - pRedCBS / 100) + 0.1 * (1 - pRedIBS / 100))) / 100;
+    // Fora do crédito 2027 (achados da revisão de 2026-11-24 — inflavam o "Em jogo 2027"):
+    //  - CFOP sem compra (remessa/retorno de armazém, industrialização, conserto, comodato, bonificação,
+    //    demonstração, transferência): não há crédito a tomar;
+    //  - devolução (finNFe 4): estorno, não compra de fornecedor;
+    //  - combustível monofásico (cProdANP/CST 620): IBS/CBS ad rem, crédito vem pelo grupo monofásico;
+    //  - nota de fornecedor regular SEM o grupo emitida antes de 03/08/2026 (grupo ainda não obrigatório);
+    //  - fornecedor não identificado (sem CRT) e produtor rural pessoa física.
+    const semCompra = CFOP_NAO_ONEROSO.test(it.cfop) || nota.finNFe === 4 || it.combustivelMono || /^62/.test(it.cst || "");
+    const antesObrigacao = (regime === "regular" || regime === "sn_regular") && !it.temIBSCBS && nota.dhEmi < INICIO_OBRIGACAO_REGULAR;
+    const foraCredito27 = regime === "pf" || regime === "desconhecido" || semCompra || antesObrigacao;
+    const ref27 = foraCredito27 ? 0 : (vBCref * (CBS_2027_ESTIMADA * (1 - pRedCBS / 100) + 0.1 * (1 - pRedIBS / 100))) / 100;
     cred.referencia2027 += ref27;
     let aprov = 0, aprov27 = 0;
     if (regime === "regular" || regime === "sn_regular") {
@@ -592,7 +606,7 @@ export function auditarNota(nota: NotaRT, consultaNcm: ConsultaNcm, consultaVige
       aprov27 = it.temIBSCBS ? ref27 : 0; // emitindo certo, toma o crédito integral
     } else if (regime === "sn_dentro" && it.sn) {
       aprov = it.sn.vIBSSN + it.sn.vCBSSN;
-      aprov27 = (vBCref * (it.sn.pIBSSN + it.sn.pCBSSN)) / 100;
+      aprov27 = foraCredito27 ? 0 : Math.min(ref27, (vBCref * (it.sn.pIBSSN + it.sn.pCBSSN)) / 100);
     }
     // Classificação que veda o crédito do adquirente (lista oficial: indicaApropriacaoCreditoAdquirente).
     if (cls && aprov > 0 && (cls.creditoAdquirenteCbs === false || cls.creditoAdquirenteIbs === false)) {
@@ -605,7 +619,7 @@ export function auditarNota(nota: NotaRT, consultaNcm: ConsultaNcm, consultaVige
     if (altaNoItem && aprov > 0) cred.risco += aprov;
     else cred.aproveitavel += aprov;
     cred.aproveitavel2027 += aprov27;
-    if (regime !== "pf") {
+    if (!foraCredito27) {
       const situacao = regime === "regular" || regime === "sn_regular" ? (it.temIBSCBS ? "com_destaque" : "sem_destaque") : regime === "sn_dentro" && it.sn ? "sn_dentro" : "sem_credito";
       memoria2027.push({ situacao, reducao: reducaoTxt, base: vBCref, aliq: CBS_2027_ESTIMADA * (1 - pRedCBS / 100) + 0.1 * (1 - pRedIBS / 100), ref: ref27, aprov: aprov27 });
     }

@@ -37,7 +37,7 @@ export function htmlRelatorioReforma(d: any, escritorioNome: string, timbrado: s
   const resumo = saida ? resumoSaida : `Foram auditadas <b>${numBR(k.notas)} NF-e de entrada</b> (${numBR(k.itens)} itens) de <b>${numBR(k.fornecedores)} fornecedores</b>, somando <b>${brl(k.valorCompras)}</b> em compras entre ${dataBR(d.periodo.de)} e ${dataBR(d.periodo.ate)}. ` +
     `<b>${String(k.conformidade).replace(".", ",")}%</b> das notas estão aderentes ao leiaute oficial do IBS/CBS (NT 2025.002-RTC v1.53). ` +
     `<b>${pctDentro}%</b> do valor comprado vem de fornecedores do Simples Nacional sem opção pelo regime regular ou MEI, que geram crédito limitado ou nenhum. ` +
-    (k.perda2027Anual > 0 ? `Mantido o cenário atual, a estimativa é de <b>${brl(k.perda2027Anual)} por ano de crédito de IBS/CBS deixado de aproveitar em 2027</b>${top3.length ? `, concentrado em ${top3.map((f: any) => esc(f.nome)).join(", ")}` : ""}. ` : "") +
+    (k.perda2027Anual > 0 ? `Mantido o cenário atual, a estimativa é de <b>${brl(k.perda2027Anual)} por ano de crédito de IBS/CBS deixado de aproveitar em 2027${d.empresa.tomaCredito ? "" : " (se a empresa passar a tomar crédito: hoje ela não toma, pelo regime tributário)"}</b>${top3.length ? `, concentrado em ${top3.map((f: any) => esc(f.nome)).join(", ")}` : ""}. ` : "") +
     (k.creditoRisco > 0 ? `Há <b>${brl(k.creditoRisco)}</b> de crédito destacado com erro do fornecedor (risco de glosa). ` : "") +
     (k.ncmsVencidos ? `Foram encontrados <b>${k.ncmsVencidos} NCM vencido(s)/inexistente(s)</b> na data da emissão. ` : "");
   const kpi = (t: string, v: string, s = "", dest = false) => `<div class="kpi${dest ? " dest" : ""}"><div class="kt">${t}</div><div class="kv">${v}</div>${s ? `<div class="ks">${s}</div>` : ""}</div>`;
@@ -57,7 +57,7 @@ export function htmlRelatorioReforma(d: any, escritorioNome: string, timbrado: s
     ${kpi(saida ? "Vendas auditadas" : "Compras auditadas", brl(k.valorCompras), `${numBR(k.fornecedores)} ${saida ? "destinatários" : "fornecedores"}`)}
     ${kpi("IBS/CBS destacado", brl(k.ibs + k.cbs), `CBS ${brl(k.cbs)} · IBS ${brl(k.ibs)}`)}
     ${saida ? kpi("Notas sem IBS/CBS", numBR(k.notas - k.notasComGrupo), "grupo obrigatório não informado", true) : kpi("Crédito aproveitável", brl(k.creditoAproveitavel), k.creditoRisco ? `${brl(k.creditoRisco)} em risco de glosa` : "sem risco de glosa")}
-    ${saida ? kpi("Itens a corrigir", numBR(k.itens - k.itensConformes), `de ${numBR(k.itens)} itens`) : kpi("Crédito 2027 em jogo", brl(k.perda2027Anual) + "/ano", `estimativa com CBS de ${String(d.fontes.cbs2027Estimada).replace(".", ",")}%`, true)}
+    ${saida ? kpi("Itens a corrigir", numBR(k.itens - k.itensConformes), `de ${numBR(k.itens)} itens`) : kpi(d.empresa.tomaCredito ? "Crédito 2027 em jogo" : "Crédito 2027 em jogo (se tomasse crédito)", brl(k.perda2027Anual) + "/ano", `estimativa com CBS de ${String(d.fontes.cbs2027Estimada).replace(".", ",")}%`, true)}
     ${kpi("NCM vencido", numBR(k.ncmsVencidos), "na data da emissão")}
   </div>
 

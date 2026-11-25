@@ -13290,7 +13290,12 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
   const pendentes = reformaEnfileirar(reformaAuditoria.paresParaValidar(notas), reformaAuditoria.ncmsParaConfirmarVigencia(notas));
   const res = notas.map((nt) => reformaAuditoria.auditarNota(nt, reformaConsultaNcm, reformaConsultaVigencia));
 
-  const meses = Math.max(1, (Number(ate.slice(0, 4)) - Number(de.slice(0, 4))) * 12 + Number(ate.slice(5, 7)) - Number(de.slice(5, 7)) + 1);
+  // Meses do período pelos DIAS efetivamente cobertos (até hoje, se o filtro vai além) — antes contava mês
+  // do filtro inteiro (mês corrente parcial = mês cheio; 15→14 = 2 meses) e distorcia a anualização.
+  const hojeIso = new Date(Date.now() - 3 * 3600_000).toISOString().slice(0, 10);
+  const fimEfetivo = ate < hojeIso ? ate : hojeIso;
+  const diasPeriodo = Math.max(1, Math.round((Date.parse(fimEfetivo + "T12:00:00Z") - Date.parse(de + "T12:00:00Z")) / 86_400_000) + 1);
+  const meses = Math.max(1, Math.round((diasPeriodo / 30.4375) * 10) / 10);
   const r2 = (v: number) => Math.round(v * 100) / 100;
   const soma = (f: (r: reformaAuditoria.ResultadoNota) => number) => r2(res.reduce((a, r) => a + f(r), 0));
   const itensTotal = res.reduce((a, r) => a + r.nota.itens.length, 0);
@@ -13405,12 +13410,12 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
       alta: f.alta, media: f.media, baixa: f.baixa, score, status: score >= 90 && !f.alta ? "conforme" : score >= 70 ? "atencao" : "critico",
       creditoDestacado: r2(f.creditoDestacado), risco: r2(f.risco), perda2027Anual, regras: [...f.regras], recomendacao: recomendacao(f, perda2027Anual),
       memoria2027: saida ? null : {
-        meses, de, ate, cbs: reformaAuditoria.CBS_2027_ESTIMADA,
+        meses, de, ate: fimEfetivo, cbs: reformaAuditoria.CBS_2027_ESTIMADA,
         linhas: [...f.memoria.values()].map((m: any) => ({ situacao: m.situacao, reducao: m.reducao, aliq: Math.round(m.aliq * 10000) / 10000, itens: m.itens, base: r2(m.base), ref: r2(m.ref), aprov: r2(m.aprov), perda: r2(Math.max(0, m.ref - m.aprov)) }))
           .sort((a: any, b: any) => b.perda - a.perda || b.base - a.base),
         perdaPeriodo: r2(Math.max(0, f.referencia2027 - f.aproveitavel2027)),
       },
-      memoriaTexto: saida ? [] : reformaAuditoria.textoMemoria2027({ meses, de, ate, cbs: reformaAuditoria.CBS_2027_ESTIMADA, linhas: [...f.memoria.values()].map((m: any) => ({ ...m, perda: Math.max(0, m.ref - m.aprov) })).sort((a: any, b: any) => (b.ref - b.aprov) - (a.ref - a.aprov) || b.base - a.base), perdaPeriodo: r2(Math.max(0, f.referencia2027 - f.aproveitavel2027)) }, perda2027Anual),
+      memoriaTexto: saida ? [] : reformaAuditoria.textoMemoria2027({ meses, de, ate: fimEfetivo, cbs: reformaAuditoria.CBS_2027_ESTIMADA, linhas: [...f.memoria.values()].map((m: any) => ({ ...m, perda: Math.max(0, m.ref - m.aprov) })).sort((a: any, b: any) => (b.ref - b.aprov) - (a.ref - a.aprov) || b.base - a.base), perdaPeriodo: r2(Math.max(0, f.referencia2027 - f.aproveitavel2027)) }, perda2027Anual),
       ultimaNota: f.ultimaNotaDocId ? { docId: f.ultimaNotaDocId, numero: f.ultimaNotaNumero, serie: f.ultimaNotaSerie, dhEmi: f.ultimaEmissao, valor: r2(f.ultimaNotaValor) } : null,
     };
   }).sort((a, b) => b.perda2027Anual - a.perda2027Anual || b.alta - a.alta || b.valor - a.valor);
@@ -13507,7 +13512,7 @@ async function reformaEnviarPdf(res: any, escritorioId: number, empresaId: numbe
 async function reformaEnviarFichas(res: any, escritorioId: number, empresaId: number, q: any) {
   const { de, ate } = reformaPeriodo(q);
   try {
-    const d = reformaCalcularAuditoria(escritorioId, empresaId, de, ate);
+    const d = await reformaCalcularValidado(escritorioId, empresaId, de, ate, false, "entrada", 90_000);
     const emp = sqlite.prepare(`SELECT nome, cnpj, inscricao_estadual FROM empresas WHERE id = ?`).get(empresaId) as any;
     const valorDoc = sqlite.prepare(`SELECT valor_total FROM nfe_documentos WHERE id = ?`);
     const sev: Record<string, number> = { alta: 0, media: 1, baixa: 2, info: 3 };
@@ -13555,7 +13560,7 @@ async function reformaEnviarRelatorioFornecedores(res: any, escritorioId: number
   const cnpjs = String(q.cnpjs || "").split(",").map((x) => x.replace(/\D/g, "")).filter(Boolean);
   if (!cnpjs.length) return res.status(400).json({ error: "Escolha pelo menos um fornecedor." });
   try {
-    const d = reformaCalcularAuditoria(escritorioId, empresaId, de, ate, true);
+    const d = await reformaCalcularValidado(escritorioId, empresaId, de, ate, true, "entrada", 90_000);
     const forns = d.fornecedores.filter((f: any) => cnpjs.includes(String(f.cnpj).replace(/\D/g, ""))).map((f: any) => ({
       cnpj: f.cnpj, nome: f.nome, uf: f.uf, regimeLabel: f.regimeLabel, notas: f.notas, itens: f.itens, valor: f.valor, recomendacao: f.recomendacao,
       achados: d.achados.filter((a: any) => a.cnpj === f.cnpj),
@@ -13575,7 +13580,7 @@ async function reformaEnviarRelatorioFornecedores(res: any, escritorioId: number
 async function reformaEnviarMapaNcm(res: any, escritorioId: number, empresaId: number, q: any) {
   const { de, ate } = reformaPeriodo(q);
   try {
-    const d = reformaCalcularAuditoria(escritorioId, empresaId, de, ate, true, q.direcao === "saida" ? "saida" : "entrada");
+    const d = await reformaCalcularValidado(escritorioId, empresaId, de, ate, true, q.direcao === "saida" ? "saida" : "entrada", 90_000);
     const status = String(q.status || "").split(",").filter(Boolean);
     const norm = (t: any) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
     const busca = norm(q.busca || "").trim();
@@ -26124,15 +26129,15 @@ function propostaProximoNumero(escritorioId: number, ano: number): number {
     .get(escritorioId, ano, escritorioId, ano) as any;
   return (m?.m || 0) + 1;
 }
-function propostaAnalisar(escritorioId: number, empresaIds: number[]) {
+async function propostaAnalisar(escritorioId: number, empresaIds: number[]) {
   const ate = propostaHojeIso();
   const [ano, mes] = [Number(ate.slice(0, 4)), Number(ate.slice(5, 7))];
   const ini = new Date(Date.UTC(ano, mes - 1 - 3, 1));
   const de = ini.toISOString().slice(0, 10);
-  const entradas: propostas.EmpresaEntrada[] = empresaIds.map((id) => {
+  const entradas: propostas.EmpresaEntrada[] = await Promise.all(empresaIds.map(async (id) => {
     const e = sqlite.prepare(`SELECT id, nome, cnpj, regime_tributario, cidade, uf, cnae_principal_json FROM empresas WHERE id = ? AND escritorio_id = ?`).get(id, escritorioId) as any;
     if (!e) throw new Error("Empresa não encontrada.");
-    const auditoria = reformaCalcularAuditoria(escritorioId, id, de, ate, true, "entrada");
+    const auditoria = await reformaCalcularValidado(escritorioId, id, de, ate, true, "entrada", 90_000);
     const cnpj = String(e.cnpj || "").replace(/\D/g, "");
     const um = (sql: string, ...p: any[]) => sqlite.prepare(sql).get(...p) as any;
     const nfse = um(`SELECT COUNT(*) n, COALESCE(SUM(valor_total),0) v FROM nfe_documentos WHERE empresa_id = ? AND tipo = 'nfse' AND COALESCE(emitente_cnpj,'') <> ? AND substr(data_emissao,1,10) >= date(?, '-12 months')`, id, cnpj, ate);
@@ -26147,8 +26152,9 @@ function propostaAnalisar(escritorioId: number, empresaIds: number[]) {
       auditoria,
       extras: { nfseTomadas12m: nfse.n, nfseTomadasValor12m: nfse.v, cteTomados: cte.n, cancelamentos: canc.n, exportacoes12m: exp.n, exportacoesValor12m: exp.v, documentosPeriodo: docs.n },
     };
-  });
-  return propostas.montarAnalise(entradas, { de, ate, meses: 4 });
+  }));
+  // Mesma base de meses da auditoria (dias cobertos até hoje) — antes fixo em 4, com o mês corrente parcial.
+  return propostas.montarAnalise(entradas, { de, ate, meses: entradas[0]?.auditoria?.periodo?.meses || 4 });
 }
 function propostaLinha(user: any, id: number) {
   const p = sqlite.prepare(`SELECT * FROM propostas WHERE id = ? AND escritorio_id = ?`).get(id, user.escritorioId) as any;
@@ -26193,7 +26199,7 @@ app.get("/api/propostas/empresas-grupo", blockCliente, requirePermissao("contrat
     .map((x) => x.id);
   res.json({ ids });
 });
-app.post("/api/propostas", blockCliente, requirePermissao("contratos", "postar"), (req, res) => {
+app.post("/api/propostas", blockCliente, requirePermissao("contratos", "postar"), async (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.body?.empresaId);
   const extras = Array.isArray(req.body?.empresaIds) ? req.body.empresaIds.map(Number).filter((n: number) => n && n !== empresaId) : [];
@@ -26203,7 +26209,7 @@ app.post("/api/propostas", blockCliente, requirePermissao("contratos", "postar")
   const principal = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ? AND escritorio_id = ?`).get(empresaId, user.escritorioId) as any;
   if (!principal) return res.status(404).json({ error: "Empresa não encontrada." });
   try {
-    const analise = propostaAnalisar(user.escritorioId, ids);
+    const analise = await propostaAnalisar(user.escritorioId, ids);
     const config = propostas.configPadrao(analise);
     const ano = agoraBrasilia().ano;
 
@@ -26232,13 +26238,13 @@ app.put("/api/propostas/:id", blockCliente, requirePermissao("contratos", "edita
   sqlite.prepare(`UPDATE propostas SET config = ?, cliente_nome = ?, updated_at = datetime('now') WHERE id = ?`).run(JSON.stringify(config), clienteNome, p.id);
   res.json(propostaMontarResposta({ ...p, config: JSON.stringify(config), cliente_nome: clienteNome }));
 });
-app.post("/api/propostas/:id/reanalisar", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+app.post("/api/propostas/:id/reanalisar", blockCliente, requirePermissao("contratos", "editar"), async (req, res) => {
   const user = (req as any).user;
   const p = propostaLinha(user, Number(req.params.id));
   if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
   if (p.status === "aprovada") return res.status(409).json({ error: "Proposta já aprovada." });
   try {
-    const analise = propostaAnalisar(user.escritorioId, JSON.parse(p.empresas_ids));
+    const analise = await propostaAnalisar(user.escritorioId, JSON.parse(p.empresas_ids));
     sqlite.prepare(`UPDATE propostas SET analise = ?, updated_at = datetime('now') WHERE id = ?`).run(JSON.stringify(analise), p.id);
     res.json(propostaMontarResposta({ ...p, analise: JSON.stringify(analise) }));
   } catch (e: any) {
