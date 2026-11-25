@@ -9517,6 +9517,7 @@ function rtAbasHtml(){
     <div class="tab ${RT_ABA==='auditoria'?'active':''}" data-rtaba="auditoria">🔎 Auditoria de entradas</div>
     <div class="tab ${RT_ABA==='saidas'?'active':''}" data-rtaba="saidas">📤 Auditoria de saídas</div>
     <div class="tab ${RT_ABA==='regime'?'active':''}" data-rtaba="regime">⚖️ Análise de regime pós-reforma</div>
+    <div class="tab ${RT_ABA==='rad'?'active':''}" data-rtaba="rad" title="Recolhimento pelo Adquirente — créditos de CBS a garantir">🧾 RAD</div>
   </div>`;
 }
 async function reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas){
@@ -10807,6 +10808,7 @@ async function pageReformaTributaria(){
       return;
     }
     const { de, ate } = rtPeriodoDatas();
+    if(RT_ABA==='rad'){ reformaRadMontar(painel, `/reforma/auditoria?empresaId=${RT_EMPRESA_ID}&de=${de}&ate=${ate}`); return; }
     const dir = RT_ABA==='saidas' ? '&direcao=saida' : '';
     reformaMontar(painel, `/reforma/auditoria?empresaId=${RT_EMPRESA_ID}&de=${de}&ate=${ate}${dir}`, `/api/reforma/auditoria/pdf?empresaId=${RT_EMPRESA_ID}&de=${de}&ate=${ate}${dir}`);
   }
@@ -10823,7 +10825,9 @@ async function pageMinhaReforma(){
   const painel = document.getElementById('rtPainel');
   const carregar = ()=>{
     if(RT_ABA==='regime'){ reformaDiagMontar(painel, '/reforma/minha-empresa/diagnostico', '/api/reforma/minha-empresa/diagnostico/pdf', null); return; }
-    const { de, ate } = rtPeriodoDatas(); const dir = RT_ABA==='saidas' ? '&direcao=saida' : '';
+    const { de, ate } = rtPeriodoDatas();
+    if(RT_ABA==='rad'){ reformaRadMontar(painel, `/reforma/minha-empresa/auditoria?de=${de}&ate=${ate}`); return; }
+    const dir = RT_ABA==='saidas' ? '&direcao=saida' : '';
     reformaMontar(painel, `/reforma/minha-empresa/auditoria?de=${de}&ate=${ate}${dir}`, `/api/reforma/minha-empresa/auditoria/pdf?de=${de}&ate=${ate}${dir}`);
   };
   main().querySelectorAll('[data-rtaba]').forEach(t=>t.addEventListener('click', ()=>{
@@ -10867,6 +10871,60 @@ function rtLigarFiltroPeriodo(onChange){
   }));
 }
 
+// Aba RAD (Recolhimento pelo Adquirente): monitora, pelas notas de ENTRADA, os créditos de CBS em
+// risco por falha do fornecedor — as compras em que o adquirente pode recolher a CBS via RAD e
+// assegurar o crédito. Reaproveita o motor da auditoria de entradas (/reforma/auditoria).
+async function reformaRadMontar(painel, urlApi){
+  const seq = ++RT_SEQ; const paginaAtual = STATE.page;
+  painel.innerHTML = `<div class="card"><div class="empty-state">🧾 Levantando os créditos de CBS que o RAD garante ao adquirente…</div></div>`;
+  let d;
+  try{ d = await api(urlApi); }
+  catch(e){ if(seq===RT_SEQ) painel.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
+  if(seq!==RT_SEQ || STATE.page!==paginaAtual) return;
+  const k = d.kpis || {};
+  const intro = `<div class="card" style="border-left:4px solid #c9a227;">
+    <div style="font-size:13.5px; line-height:1.55;"><b>🧾 RAD — Recolhimento pelo Adquirente.</b> Mecanismo da CBS (API da Receita Federal, nov/2026) em que o <b>adquirente</b> recolhe a CBS das próprias compras, quita o débito do fornecedor e <b>garante o direito ao crédito</b>. Esta aba monitora, pelas notas de entrada, os créditos em risco por falha do fornecedor — as compras em que vale usar o RAD para não perder o crédito.</div>
+  </div>`;
+  if(!k.notas){
+    painel.innerHTML = intro + `<div class="card"><div class="empty-state">Nenhuma nota de entrada no período para <b>${esc(d.empresa?.nome||'')}</b>. As notas chegam pela Busca de XML.</div></div>`;
+    return;
+  }
+  if(d.validacao && d.validacao.pendentes>0 && !d.validacao.erroApi && (painel._radTent||0) < 80){
+    painel._radTent = (painel._radTent||0) + 1;
+    painel.innerHTML = intro + `<div class="card"><div class="empty-state">⏳ Conferindo na Calculadora oficial da RFB — faltam <b>${rtNum(d.validacao.pendentes)}</b> consulta(s).<br><span style="font-size:12.5px; color:var(--ink-soft);">O RAD aparece quando as classificações estiverem validadas.</span></div></div>`;
+    setTimeout(()=>{ if(seq===RT_SEQ && STATE.page===paginaAtual && document.body.contains(painel)) reformaRadMontar(painel, urlApi); }, 3000);
+    return;
+  }
+  painel._radTent = 0;
+  const forn = d.fornecedores || [];
+  const elegiveis = forn.filter(f=>f.risco>0 || f.status!=='conforme').sort((a,b)=>(b.risco-a.risco) || (b.perda2027Anual-a.perda2027Anual));
+  const totRisco = forn.reduce((s,f)=>s+(f.risco||0),0);
+  const totCredito = forn.reduce((s,f)=>s+(f.creditoDestacado||0),0);
+  const tile = (t,v,s,dest)=>`<div class="rt-kpi${dest?' rt-kpi-destaque':''}"><div class="rt-kpi-t">${t}</div><div class="rt-kpi-v">${v}</div>${s?`<div class="rt-kpi-s">${s}</div>`:''}</div>`;
+  painel.innerHTML = intro + `
+    <div class="rt-kpis">
+      ${tile('Crédito de CBS em risco', rtBRL(totRisco), 'crédito destacado que o RAD protege contra glosa', true)}
+      ${tile('Crédito 2027 em jogo', rtBRL(k.perda2027Anual||0)+'<span class="rt-kpi-un">/ano</span>', 'estimativa anualizada')}
+      ${tile('Crédito destacado nas compras', rtBRL(totCredito), `${rtNum(forn.length)} fornecedor(es) · ${rtNum(k.notas)} nota(s)`)}
+      ${tile('Fornecedores a monitorar (RAD)', rtNum(elegiveis.length), 'com risco ou inconsistência no destaque')}
+    </div>
+    <div class="card" style="overflow-x:auto;">
+      <h3 style="margin:0 0 4px;">Compras elegíveis a RAD</h3>
+      <p class="subtitle" style="margin:0 0 10px;">Fornecedores com crédito em risco de glosa — onde o adquirente pode recolher a CBS via RAD e assegurar o crédito.</p>
+      ${elegiveis.length ? `<table class="data-table">
+        <thead><tr><th>Fornecedor</th><th>Situação</th><th style="text-align:right;">Compras</th><th style="text-align:right;">Crédito destacado</th><th style="text-align:right;">Em risco</th><th style="text-align:right;">Em jogo 2027/ano</th></tr></thead>
+        <tbody>${elegiveis.map(f=>`<tr>
+          <td><b>${esc(f.nome)}</b><div class="rt-mut" style="font-size:11px;">${esc(fmtCnpjCpf(f.cnpj))}${f.uf?' · '+esc(f.uf):''}</div></td>
+          <td style="white-space:nowrap;">${rtChip(RT_STATUS[f.status])}${f.alta?` <span style="color:#d03b3b; font-size:11px;">⛔ ${esc(f.alta)}</span>`:''}</td>
+          <td style="text-align:right; white-space:nowrap;">${rtBRL(f.valor)}</td>
+          <td style="text-align:right; white-space:nowrap;">${rtBRL(f.creditoDestacado)}</td>
+          <td style="text-align:right; white-space:nowrap; color:${f.risco?'#d03b3b':'inherit'};">${f.risco?rtBRL(f.risco):'—'}</td>
+          <td style="text-align:right; white-space:nowrap;">${f.perda2027Anual?rtBRL(f.perda2027Anual):'—'}</td>
+        </tr>`).join('')}</tbody>
+      </table>` : `<div class="empty-state" style="color:#0ca30c;">✔ Nenhum crédito em risco no período — o destaque de IBS/CBS das compras está consistente.</div>`}
+      <div class="rt-mut" style="font-size:11.5px; margin-top:10px;">A emissão do documento de arrecadação do RAD pela API oficial da Receita Federal (disponibilizada em 17/11/2026) será integrada aqui em etapa seguinte. Por ora, esta aba <b>monitora</b> os créditos elegíveis.</div>
+    </div>`;
+}
 async function reformaMontar(painel, urlApi, urlPdf, silencioso){
   const seq = ++RT_SEQ;
   const paginaAtual = STATE.page;
