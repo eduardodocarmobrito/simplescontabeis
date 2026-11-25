@@ -37,6 +37,8 @@ import * as openFinance from "./open-finance";
 import * as onedrive from "./onedrive";
 import * as gdrive from "./gdrive";
 import * as radRfb from "./rad-rfb";
+import * as dominioComparativo from "./dominio-comparativo";
+import * as nf3e from "./nf3e";
 import * as integracontador from "./integracontador";
 import * as ocr from "./ocr";
 import { buscarViaOnvio } from "./onvio-sync";
@@ -11512,6 +11514,73 @@ function nfeInserirDocumentoDedup(args: {
 // de portais de emissão/Sefaz) — extrai todo .xml de dentro, inclusive em subpastas, e processa cada
 // um como se tivesse sido enviado solto.
 const uploadXmlBulk = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024, files: 50 } });
+// ---------- NF3-e (conta de energia, modelo 66): importação PRÓPRIA ----------
+// Pedido 2026-11-25: as contas da Equatorial não vinham (a NF3-e não tem Distribuição de DF-e nacional). Rota
+// SEPARADA da busca padrão (Sefaz) e da do Extrato NFE — não mistura: grava com fonte='nf3e' / tipo='nf3e'
+// / doc_schema 'nf3e_importacao', casa a empresa pelo CPF/CNPJ do TITULAR da conta (dest) e aceita XML solto
+// ou .zip. Evento de cancelamento da NF3-e (procEventoNF3e 110111) também entra e risca a conta.
+app.post("/api/nfe/nf3e/:empresaId/importar", blockCliente, requirePermissao("nfe-busca", "postar"), uploadXmlBulk.array("arquivos", 50), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const empresa = sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const docEmpresa = String(empresa?.cnpj || "").replace(/\D/g, "");
+  const arquivos = (req.files as Express.Multer.File[]) || [];
+  if (!arquivos.length) return res.status(400).json({ error: "Selecione um ou mais XML de conta de energia (NF3-e) ou um .zip com vários." });
+  const resultados: { nomeArquivo: string; status: "importado" | "duplicado" | "erro"; motivo?: string; numero?: string; valor?: number; competencia?: string | null }[] = [];
+  const xmls: { nomeArquivo: string; buffer: Buffer }[] = [];
+  for (const file of arquivos) {
+    const nome = corrigirNomeArquivo(file.originalname);
+    if (/\.zip$/i.test(nome)) {
+      try {
+        const zip = await JSZip.loadAsync(file.buffer);
+        const entradas = Object.values(zip.files).filter((f) => !f.dir && /\.xml$/i.test(f.name));
+        if (!entradas.length) { resultados.push({ nomeArquivo: nome, status: "erro", motivo: "O .zip não tem nenhum .xml dentro." }); continue; }
+        for (const e of entradas) xmls.push({ nomeArquivo: `${nome} → ${e.name}`, buffer: await e.async("nodebuffer") });
+      } catch (e: any) { resultados.push({ nomeArquivo: nome, status: "erro", motivo: `Não consegui abrir o .zip: ${e.message}` }); }
+    } else if (/\.xml$/i.test(nome)) xmls.push({ nomeArquivo: nome, buffer: file.buffer });
+    else resultados.push({ nomeArquivo: nome, status: "erro", motivo: "Não é .xml nem .zip." });
+  }
+  // Titular da conta = esta empresa; se for outra empresa do escritório (mesmo CPF/CNPJ), vai pra ela.
+  const empresaDoTitular = (doc: string | null): number | null => {
+    const d = String(doc || "").replace(/\D/g, "");
+    if (!d) return null;
+    if (d === docEmpresa) return empresaId;
+    const outra = sqlite.prepare(`SELECT id FROM empresas WHERE escritorio_id = ? AND REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') = ? ORDER BY ativo DESC, id LIMIT 1`).get(user.escritorioId, d) as any;
+    return outra && podeAcessarEmpresa(user, outra.id) ? outra.id : null;
+  };
+  const ins = sqlite.prepare(
+    `INSERT INTO nfe_documentos (empresa_id, escritorio_id, fonte, nsu, doc_schema, tipo, chave_acesso, emitente_cnpj, emitente_nome, destinatario_cnpj, destinatario_nome, valor_total, data_emissao, xml, valor_icms, valor_pis, valor_cofins, evento_descricao)
+     VALUES (?, ?, 'nf3e', ?, 'nf3e_importacao', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  for (const { nomeArquivo, buffer } of xmls) {
+    const xml = buffer.toString("utf8").replace(/^﻿/, "");
+    try {
+      if (nf3e.ehEventoNf3e(xml)) {
+        const ev = nf3e.lerEventoNf3e(xml);
+        const conta = sqlite.prepare(`SELECT empresa_id FROM nfe_documentos WHERE escritorio_id = ? AND tipo = 'nf3e' AND chave_acesso = ? LIMIT 1`).get(user.escritorioId, ev.chave) as any;
+        const destino = conta?.empresa_id || empresaId;
+        if (!podeAcessarEmpresa(user, destino)) throw new Error("Sem acesso à empresa da conta.");
+        const nsu = `ev${ev.tipoEvento}-${ev.chave}`;
+        if (sqlite.prepare(`SELECT 1 FROM nfe_documentos WHERE empresa_id = ? AND fonte = 'nf3e' AND nsu = ?`).get(destino, nsu)) { resultados.push({ nomeArquivo, status: "duplicado" }); continue; }
+        ins.run(destino, user.escritorioId, nsu, "evento", ev.chave, null, null, null, null, null, ev.dhEvento, xml, null, null, null, `${ev.descricao} de NF3-e`);
+        resultados.push({ nomeArquivo, status: "importado", motivo: `Evento: ${ev.descricao}` });
+        continue;
+      }
+      if (!nf3e.ehNf3e(xml)) { resultados.push({ nomeArquivo, status: "erro", motivo: "Não é XML de NF3-e (conta de energia). Notas NF-e/CT-e entram pelo \"Importar XML\" normal." }); continue; }
+      const c = nf3e.lerNf3e(xml);
+      if (!c.autorizada) { resultados.push({ nomeArquivo, status: "erro", motivo: "NF3-e não autorizada (protocolo diferente de 100)." }); continue; }
+      const destino = empresaDoTitular(c.destDoc);
+      if (!destino) { resultados.push({ nomeArquivo, status: "erro", motivo: `Conta em nome de ${c.destNome || "?"} (${c.destDoc || "sem CPF/CNPJ"}), que não é ${empresa.nome} nem outra empresa cadastrada.` }); continue; }
+      if (sqlite.prepare(`SELECT 1 FROM nfe_documentos WHERE empresa_id = ? AND fonte = 'nf3e' AND nsu = ?`).get(destino, c.chave)) { resultados.push({ nomeArquivo, status: "duplicado", numero: c.numero }); continue; }
+      ins.run(destino, user.escritorioId, c.chave, "nf3e", c.chave, c.emitCnpj, c.emitNome, c.destDoc, c.destNome, c.valor, c.dhEmi, xml, c.vICMS, c.vPIS, c.vCOFINS, null);
+      resultados.push({ nomeArquivo, status: "importado", numero: c.numero, valor: c.valor, competencia: c.competencia });
+    } catch (e: any) {
+      resultados.push({ nomeArquivo, status: "erro", motivo: e.message });
+    }
+  }
+  res.json({ resultados });
+});
 app.post("/api/nfe/documentos/:empresaId/importar", blockCliente, requirePermissao("nfe-busca", "postar"), uploadXmlBulk.array("arquivos", 50), async (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.params.empresaId);
@@ -12987,6 +13056,7 @@ async function nfeDocumentoObterPdf(row: any): Promise<{ pdf: Buffer | null; err
   catch (e: any) { console.warn(`[pdf] carimbo de cancelada falhou (doc ${row.id}): ${e.message}`); return r; }
 }
 async function nfeDocumentoObterPdfBase(row: any): Promise<{ pdf: Buffer | null; erro: string | null }> {
+  if (row.tipo === "nf3e") return { pdf: null, erro: "Conta de energia (NF3-e): o sistema guarda o XML; o PDF da fatura fica no portal da distribuidora." };
   if (row.tipo === "evento") return { pdf: null, erro: "Eventos não têm representação em PDF — baixe o XML." };
   // Nota que o Extrato NFE conhece (veio de lá ou também está lá) → usa o DANFE/DACTE/DANFSe deles,
   // pra ficar idêntico ao que aparece no Extrato NFE. Falhou (fora do ar, nota removida) → cai no nosso.
@@ -14704,6 +14774,61 @@ app.get("/api/nfe/minha-empresa/documentos/exportar-analitico-pdf", requireClien
   await nfeGerarAnaliticoPdf(user, user.empresaId, req.query, res);
 });
 
+// ---------- Comparativo Domínio x site (entradas) ----------
+// Lê o PDF "Acompanhamento de Entradas" do Domínio e cruza nota a nota com as entradas do site no mesmo
+// período (motor em dominio-comparativo.ts). SÓ ESCRITÓRIO (blockCliente) — pedido do usuário 2026-11-25:
+// "aparecer essa função só para quem é colaborador do escritório". A empresa vem do CNPJ impresso no PDF
+// (não da tela), pra nunca comparar o PDF de uma empresa com os XMLs de outra.
+app.post("/api/nfe/comparativo-dominio", blockCliente, requirePermissao("nfe-busca", "visualizar"), upload.single("arquivo"), async (req, res) => {
+  const user = (req as any).user;
+  const f = (req as any).file as Express.Multer.File | undefined;
+  if (!f || !f.buffer?.length) return res.status(400).json({ error: "Envie o PDF do relatório Acompanhamento de Entradas do Domínio." });
+  if (f.buffer.subarray(0, 5).toString("latin1") !== "%PDF-") return res.status(400).json({ error: "O arquivo enviado não é um PDF." });
+  let dom: dominioComparativo.RelatorioDominio;
+  try { dom = await dominioComparativo.lerAcompanhamentoEntradas(f.buffer); }
+  catch (e: any) { return res.status(400).json({ error: e.message || "Não consegui ler o PDF." }); }
+  if (!dom.cnpj) return res.status(400).json({ error: "Não achei o CNPJ da empresa no cabeçalho do PDF." });
+  const empresa = (sqlite
+    .prepare(`SELECT * FROM empresas WHERE escritorio_id = ? AND REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') = ?`)
+    .all(user.escritorioId, dom.cnpj) as any[]).find((e) => podeAcessarEmpresa(user, e.id));
+  if (!empresa) return res.status(404).json({ error: `A empresa do PDF (${dom.empresaNome || "CNPJ " + dom.cnpj}) não está cadastrada no escritório ou você não tem acesso a ela.` });
+  const de = dom.periodoDe, ate = dom.periodoAte;
+  if (!de || !ate) return res.status(400).json({ error: "Não achei o período (de/até) no cabeçalho do PDF." });
+  // Entradas do site: tudo que a empresa RECEBEU (emitente ≠ ela) — NF-e/NFC-e, CT-e, NFS-e tomada etc.
+  // Janela de ±3 meses além do período só pra reconhecer nota emitida em outro mês e lançada neste.
+  const somaDias = (iso: string, d: number) => new Date(Date.parse(iso + "T12:00:00Z") + d * 86400000).toISOString().slice(0, 10);
+  const comp = competenciaSql("d");
+  const canc = `EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo = 'evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%')`;
+  const rows = sqlite
+    .prepare(
+      `SELECT d.id, d.tipo, d.chave_acesso as chave, d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome, d.data_emissao as dataEmissao,
+              ${comp} as competencia, d.valor_total as valorTotal, ${canc} as cancelada, d.cte_tomador as cteTomador, d.xml
+       FROM nfe_documentos d
+       WHERE d.escritorio_id = ? AND d.empresa_id = ? AND d.tipo NOT IN ('evento','mdfe','outro')
+         AND COALESCE(d.emitente_cnpj,'') <> ? AND ${comp} BETWEEN ? AND ?`
+    )
+    .all(user.escritorioId, empresa.id, dom.cnpj, somaDias(de, -92), somaDias(ate, 92)) as any[];
+  const docs = rows.map((r) => {
+    if (r.tipo === "cte" && !r.cteTomador) r.cteTomador = cteTomadorDoc(r.xml); // linha ainda não preenchida em 2º plano
+    return dominioComparativo.docSiteDeLinha(r);
+  });
+  const noPeriodo = (d: dominioComparativo.DocSite) => d.competencia >= de && d.competencia <= ate;
+  const resultado = dominioComparativo.compararEntradas(dom, docs.filter(noPeriodo), docs.filter((d) => !noPeriodo(d)), dom.cnpj);
+  const telaEmpresaId = Number((req.body || {}).empresaId) || null;
+  if (String((req.body || {}).formato || "") === "pdf") {
+    try {
+      const html = dominioComparativo.relatorioHtml(resultado, empresa.nome, fmtCnpjRelatorio(empresa.cnpj));
+      const pdf = await contratos.gerarPdfDeHtml(html, `Comparativo Domínio x Site - ${empresa.nome}`, { landscape: true });
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="Comparativo Dominio x Site - ${String(empresa.nome).replace(/[\\/:*?"<>|]/g, "_")}.pdf"`);
+      return res.send(pdf);
+    } catch (e: any) {
+      return res.status(500).json({ error: "Falha ao gerar o PDF: " + e.message });
+    }
+  }
+  res.json({ ...resultado, empresaId: empresa.id, empresaNome: empresa.nome, empresaDiferenteDaTela: !!(telaEmpresaId && telaEmpresaId !== empresa.id) });
+});
+
 // ---------- Exportação de XML pro OneDrive (direto da nuvem, sem agente local) ----------
 function getOnedriveConfig(escritorioId: number): any {
   return sqlite.prepare(`SELECT * FROM onedrive_config WHERE escritorio_id = ?`).get(escritorioId) || {};
@@ -14845,7 +14970,7 @@ async function onedriveExportarDocumentosNovos(escritorioId: number): Promise<{ 
              -- precisa dele). Detecta pelo tpEvento do XML (110111/110112 = cancelamento), porque esses
              -- eventos vêm da Distribuição DFe com evento_descricao NULL. Outros eventos (ex.: "Registro
              -- de Autorização de CT-e para a NF-e" tpEvento 610600, CC-e 110110, manifestação) ficam fora.
-             AND (d.tipo != 'evento' OR d.xml LIKE '%<tpEvento>110111</tpEvento>%' OR d.xml LIKE '%<tpEvento>110112</tpEvento>%')
+             AND d.fonte != 'nf3e' AND (d.tipo != 'evento' OR d.xml LIKE '%<tpEvento>110111</tpEvento>%' OR d.xml LIKE '%<tpEvento>110112</tpEvento>%')
            ORDER BY d.id ASC LIMIT 200`
         )
         .all(escritorioId, ultimoId) as any[];
@@ -15052,7 +15177,7 @@ async function gdriveExportarDocumentosNovos(escritorioId: number): Promise<{ no
                   e.nome as empresaNome, e.codigo_dominio as empresaCodigo, e.apelido as empresaApelido, e.cnpj as empresaCnpj
            FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
            WHERE d.escritorio_id = ? AND d.id > ?
-             AND (d.tipo != 'evento' OR d.xml LIKE '%<tpEvento>110111</tpEvento>%' OR d.xml LIKE '%<tpEvento>110112</tpEvento>%')
+             AND d.fonte != 'nf3e' AND (d.tipo != 'evento' OR d.xml LIKE '%<tpEvento>110111</tpEvento>%' OR d.xml LIKE '%<tpEvento>110112</tpEvento>%')
            ORDER BY d.id ASC LIMIT 200`
         )
         .all(escritorioId, ultimoId) as any[];

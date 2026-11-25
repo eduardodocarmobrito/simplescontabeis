@@ -11166,6 +11166,92 @@ function rtWaterBarIndetHtml(titulo, sub){
 function rtWaterBarInlineHtml(titulo){
   return `<div style="padding:2px 0;">${titulo?`<div style="font-size:12.5px; margin-bottom:8px; color:var(--ink-soft);">${titulo}</div>`:''}<div class="waterbar waterbar-indet" style="height:26px; max-width:none;"><div class="waterbar-fill"></div></div></div>`;
 }
+// ---- Comparativo Domínio x site (entradas) — só escritório ----
+// Lê o PDF "Acompanhamento de Entradas" do Domínio no servidor (robô em dominio-comparativo.ts) e mostra
+// cada diferença nota a nota; o mesmo arquivo é reenviado pra gerar o relatório em PDF.
+let NFE_COMP_DOM = null; // { arquivo, resultado, filtro }
+const NFE_COMP_ROTULO = {
+  ok:'Bate', cancelada_ok:'Cancelada nos dois', valor_diferente:'Valor diferente', cancelada_no_site_com_valor:'Cancelada no site, lançada com valor',
+  zerada_no_dominio:'Zerada no Domínio', so_dominio:'Só no Domínio (sem XML)', so_site:'Falta lançar no Domínio', numero_diferente:'Número digitado errado',
+  outro_periodo:'Emitida em outro mês', energia_sem_xml:'Energia (sem XML)', cte_outro_tomador:'CT-e de outro tomador',
+  entrada_do_emitente:'Entrada do fornecedor (devolução)', cancelada_so_site:'Cancelada (só no site)',
+};
+const nfeCompBate = i => i.situacao==='ok' || i.situacao==='cancelada_ok';
+const nfeCompData = iso => iso && /^\d{4}-\d{2}-\d{2}/.test(iso) ? iso.slice(0,10).split('-').reverse().join('/') : '—';
+const nfeCompCfop = c => /^\d{4}$/.test(c||'') ? c[0]+'.'+c.slice(1) : (c||'—');
+async function nfeCompDominioRodar(arquivo, empresaIdTela){
+  NFE_COMP_DOM = { arquivo, resultado:null, filtro:'erros' };
+  openModal(`<h3 style="margin-top:0;">📑 Comparativo Domínio x Site — entradas</h3>${rtWaterBarIndetHtml('🤖 Lendo o PDF do Domínio e conferindo nota a nota com os XMLs…', esc(arquivo.name))}`, '1180px');
+  const fd = new FormData(); fd.append('arquivo', arquivo, arquivo.name); if(empresaIdTela) fd.append('empresaId', String(empresaIdTela));
+  try{
+    const r = await api('/nfe/comparativo-dominio', { method:'POST', body: fd });
+    NFE_COMP_DOM.resultado = r;
+    NFE_COMP_DOM.filtro = r.contagem.erros ? 'erros' : 'justificadas';
+    nfeCompDominioRender();
+  }catch(e){
+    openModal(`<h3 style="margin-top:0;">📑 Comparativo Domínio x Site — entradas</h3><div class="card" style="border-left:4px solid #d64545;"><b>Não deu pra comparar.</b><div style="margin-top:6px;">${esc(e.message)}</div><div style="margin-top:8px; font-size:12px; color:var(--ink-soft);">Use o relatório <b>Acompanhamento de Entradas</b> do Domínio, exportado em PDF, de uma empresa cadastrada no escritório.</div></div><div style="text-align:right; margin-top:12px;"><button class="btn" onclick="closeModal()">Fechar</button></div>`, '640px');
+  }
+}
+function nfeCompDominioFiltrar(f){ if(NFE_COMP_DOM){ NFE_COMP_DOM.filtro = f; nfeCompDominioRender(); } }
+function nfeCompDominioRender(){
+  const r = NFE_COMP_DOM && NFE_COMP_DOM.resultado; if(!r) return;
+  const erros = r.itens.filter(i=>i.erro), just = r.itens.filter(i=>!i.erro && !nfeCompBate(i)), bat = r.itens.filter(nfeCompBate);
+  const lista = { erros, justificadas: just, batem: bat, todas: r.itens }[NFE_COMP_DOM.filtro] || erros;
+  const ok = r.status === 'ok';
+  const banner = ok
+    ? `<div style="padding:12px 14px; border-radius:10px; background:rgba(46,204,143,.14); border:1px solid rgba(46,204,143,.5); font-weight:700; font-size:14px;">✅ Tudo certo — o Domínio bate com os XMLs do site. <span style="font-weight:normal;">${bat.length} nota(s) conferidas${just.length?`; ${just.length} diferença(s) justificada(s), que não são erro`:''}.</span></div>`
+    : `<div style="padding:12px 14px; border-radius:10px; background:rgba(214,69,69,.12); border:1px solid rgba(214,69,69,.5); font-weight:700; font-size:14px;">⚠️ ${erros.length} diferença(s) a corrigir${r.leitura.avisos.length?' — e avisos na leitura do PDF':''}. <span style="font-weight:normal;">Cada uma está detalhada abaixo.</span></div>`;
+  const avisos = r.leitura.avisos.length ? `<div style="margin-top:10px; padding:10px 12px; border-radius:10px; background:rgba(240,180,40,.14); border:1px solid rgba(240,180,40,.55); font-size:12.5px;"><b>Leitura do PDF:</b><br>${r.leitura.avisos.map(esc).join('<br>')}</div>` : '';
+  const card = (rot, val, cor) => `<div style="flex:1; min-width:150px; border:1px solid var(--rule,#e5eae7); border-radius:10px; padding:8px 12px;"><div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">${rot}</div><div style="font-size:16px; font-weight:700; white-space:nowrap; ${cor?'color:'+cor+';':''}">${val}</div></div>`;
+  const cards = `<div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+    ${card('Total Domínio', fmtMoney(r.totais.dominio))}${card('Total site (entradas)', fmtMoney(r.totais.site))}${card('Diferença (site − Domínio)', fmtMoney(r.totais.diferenca))}
+    ${card('Notas que batem', bat.length, '#159873')}${card('A corrigir', erros.length, erros.length?'#d64545':'#159873')}</div>
+    <div style="font-size:12px; color:var(--ink-soft); margin-top:8px;">A diferença se explica assim: <b>${fmtMoney(r.totais.explicadoJustificado)}</b> em diferenças justificadas + <b>${fmtMoney(r.totais.explicadoErros)}</b> em itens a corrigir${Math.abs(r.totais.naoExplicado)>0.009?` + <b style="color:#d64545;">${fmtMoney(r.totais.naoExplicado)} sem explicação</b>`:''}. Leitura do PDF: ${r.leitura.linhas} linhas / ${r.leitura.notas} notas; Total Geral do PDF ${r.leitura.totalGeralPdf==null?'não encontrado':fmtMoney(r.leitura.totalGeralPdf)}.</div>`;
+  const chip = (f, rot, n) => `<button class="btn small${NFE_COMP_DOM.filtro===f?' primary':''}" onclick="nfeCompDominioFiltrar('${f}')">${rot} (${n})</button>`;
+  const cor = i => i.erro ? 'rgba(214,69,69,.14)' : nfeCompBate(i) ? 'rgba(46,204,143,.14)' : 'rgba(80,130,210,.14)';
+  const linhas = lista.map(i=>{
+    const cfops = i.cfops && i.cfops.some(c=>c.motivo!=='ok') ? `<table class="data-table" style="margin-top:6px; font-size:11.5px;"><thead><tr><th>CFOP Domínio</th><th style="text-align:right;">Valor Domínio</th><th>CFOP XML</th><th style="text-align:right;">Valor XML</th><th style="text-align:right;">Diferença</th><th>Motivo</th></tr></thead><tbody>${i.cfops.map(c=>`<tr${c.motivo!=='ok'?' style="background:rgba(214,69,69,.08);"':''}><td>${esc(nfeCompCfop(c.cfopDominio))}</td><td style="text-align:right; white-space:nowrap;">${fmtMoney(c.valorDominio)}</td><td>${esc(c.cfopXml?nfeCompCfop(c.cfopXml):'—')}</td><td style="text-align:right; white-space:nowrap;">${c.valorXml==null?'—':fmtMoney(c.valorXml)}</td><td style="text-align:right; white-space:nowrap;">${fmtMoney(c.diferenca)}</td><td style="white-space:normal;">${esc(c.motivo)}</td></tr>`).join('')}</tbody></table>` : '';
+    return `<tr>
+      <td style="vertical-align:top;"><span style="display:inline-block; padding:2px 9px; border-radius:10px; font-size:11.5px; font-weight:700; white-space:nowrap; background:${cor(i)};">${esc(NFE_COMP_ROTULO[i.situacao]||i.situacao)}</span></td>
+      <td style="white-space:normal; vertical-align:top; min-width:380px;"><b>${esc(i.titulo)}</b>${i.site&&i.site.chave?`<div style="font-family:monospace; font-size:11px; color:var(--ink-soft);">${esc(i.site.chave)}</div>`:''}${i.detalhe?`<div style="margin-top:3px;">${esc(i.detalhe)}</div>`:''}${cfops}</td>
+      <td style="vertical-align:top; white-space:nowrap;">${i.dominio?nfeCompData(i.dominio.data):'—'}</td>
+      <td style="vertical-align:top; white-space:nowrap;">${i.site?nfeCompData(i.site.dataEmissao):'—'}</td>
+      <td style="vertical-align:top; text-align:right; white-space:nowrap;">${i.dominio?fmtMoney(i.dominio.valor):'—'}</td>
+      <td style="vertical-align:top; text-align:right; white-space:nowrap;">${i.site?fmtMoney(i.site.valor)+(i.site.cancelada?' <span style="color:#d64545;">(cancelada)</span>':''):'—'}</td>
+      <td style="vertical-align:top; text-align:right; white-space:nowrap; ${Math.abs(i.diferenca)>0.009?'color:#d64545; font-weight:700;':''}">${fmtMoney(i.diferenca)}</td></tr>`;
+  }).join('');
+  const per = `${nfeCompData(r.periodo.de)} até ${nfeCompData(r.periodo.ate)}`;
+  openModal(`<h3 style="margin-top:0;">📑 Comparativo Domínio x Site — entradas</h3>
+    <div style="font-size:13px; color:var(--ink-soft); margin:-4px 0 10px;"><b style="color:var(--ink);">${esc(r.empresaNome)}</b> ${matrizFilialHtmlPorId(r.empresaId)||''} · Período ${esc(per)} · arquivo ${esc(NFE_COMP_DOM.arquivo.name)}</div>
+    ${r.empresaDiferenteDaTela?`<div style="margin-bottom:10px; font-size:12.5px; padding:8px 12px; border-radius:8px; background:rgba(240,180,40,.14); border:1px solid rgba(240,180,40,.55);">O PDF é da empresa <b>${esc(r.empresaNome)}</b>, não da empresa selecionada na tela. A comparação foi feita com os XMLs da empresa do PDF.</div>`:''}
+    ${banner}${avisos}${cards}
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin:14px 0 8px;">${chip('erros','A corrigir',erros.length)}${chip('justificadas','Justificadas',just.length)}${chip('batem','Batem',bat.length)}${chip('todas','Todas',r.itens.length)}</div>
+    <div style="max-height:52vh; overflow:auto; border:1px solid var(--rule,#e5eae7); border-radius:10px;">
+      ${lista.length?`<table class="data-table" style="font-size:12.5px;"><thead><tr><th>Situação</th><th>Nota / o que foi encontrado</th><th>Entrada (Dom.)</th><th>Emissão (XML)</th><th style="text-align:right;">Domínio</th><th style="text-align:right;">Site (XML)</th><th style="text-align:right;">Dif. (site − Dom.)</th></tr></thead><tbody>${linhas}</tbody></table>`:`<div class="empty-state">${NFE_COMP_DOM.filtro==='erros'?'Nenhuma diferença a corrigir. 🎉':'Nada nesta lista.'}</div>`}
+    </div>
+    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:12px;">
+      <button class="btn" id="btnNfeCompDominioPdf" onclick="nfeCompDominioPdf()">📄 Baixar relatório PDF</button>
+      <button class="btn" onclick="closeModal()">Fechar</button>
+    </div>`, '1180px');
+}
+async function nfeCompDominioPdf(){
+  if(!NFE_COMP_DOM) return;
+  const btn = document.getElementById('btnNfeCompDominioPdf');
+  if(btn){ btn.disabled = true; btn.textContent = 'Gerando PDF…'; }
+  try{
+    const fd = new FormData(); fd.append('arquivo', NFE_COMP_DOM.arquivo, NFE_COMP_DOM.arquivo.name); fd.append('formato', 'pdf');
+    const resp = await fetch('/api/nfe/comparativo-dominio', { method:'POST', body: fd, credentials:'include' });
+    if(!resp.ok){ let m = 'Erro '+resp.status; try{ m = (await resp.json()).error || m; }catch(_){} throw new Error(m); }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const r = NFE_COMP_DOM.resultado || {};
+    a.href = url; a.download = `Comparativo Dominio x Site - ${(r.empresaNome||'empresa').replace(/[\\/:*?"<>|]/g,'_')} - ${(r.periodo&&r.periodo.de||'').slice(0,7)}.pdf`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 60000);
+  }catch(e){ toast(e.message,'err'); }
+  finally{ if(btn){ btn.disabled = false; btn.textContent = '📄 Baixar relatório PDF'; } }
+}
 async function reformaMontar(painel, urlApi, urlPdf, silencioso){
   const seq = ++RT_SEQ;
   const paginaAtual = STATE.page;
@@ -11980,8 +12066,11 @@ async function pageNfeBusca(){
         <div id="nfeDashBody" style="margin-top:12px;"><div class="empty-state">Carregando…</div></div>
       </div>
       <div class="card">
-        <h3>Documentos</h3>
-        <div class="tabs" style="margin-bottom:12px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+          <h3 style="margin:0;">Documentos</h3>
+          ${STATE.user && STATE.user.perfil!=='Cliente' ? `<button class="btn small" id="btnNfeCompDominio" title="Lê o PDF do relatório &quot;Acompanhamento de Entradas&quot; do Domínio e confere nota a nota com as entradas do site no mesmo período — aponta cada diferença ou dá tudo certo (só escritório)">📑 Ler PDF do Domínio — comparar entradas</button><input type="file" id="nfeCompDominioInput" accept="application/pdf,.pdf" style="display:none;">` : ''}
+        </div>
+        <div class="tabs" style="margin:12px 0;">
           <div class="tab" data-direcao="emitida">Notas emitidas</div>
           <div class="tab" data-direcao="recebida">Notas recebidas</div>
         </div>
@@ -12004,6 +12093,8 @@ async function pageNfeBusca(){
           <button class="btn small" id="btnNfeImportarXml" title="Importar o XML completo de uma ou mais notas na mão (ou um .zip com várias) — use quando a busca automática na Sefaz falhar ou estiver fora do ar">⬆️ Importar XML</button>
           <button class="btn small" id="btnNfeMonitorReforma" title="Relatório detalhado da reforma (IBS/CBS), nota por nota">🧾 Monitor reforma (IBS/CBS)</button>
           <input type="file" id="nfeImportarXmlInput" accept=".xml,.zip" multiple style="display:none;">
+          <button class="btn small" id="btnNfeImportarNf3e" title="Contas de energia (NF3-e, modelo 66 — ex.: Equatorial): a Sefaz não distribui esse modelo, então o XML entra por aqui. Importação própria, separada da busca da Sefaz e do Extrato NFE.">⚡ Importar conta de energia (NF3-e)</button>
+          <input type="file" id="nfeImportarNf3eInput" accept=".xml,.zip" multiple style="display:none;">
         </div>
         <!-- Barra de rolagem horizontal fixa no topo da tabela (sincronizada): a barra nativa fica no
              rodapé da caixa de 62vh, que cai abaixo da dobra; esta aqui fica sempre acessível. -->
@@ -12375,6 +12466,27 @@ async function pageNfeBusca(){
       carregarDocumentos();
       carregarDashboard();
     }
+    // Conta de energia (NF3-e): rota própria /nfe/nf3e/:empresaId/importar — não passa pela importação padrão.
+    const btnNf3e = document.getElementById('btnNfeImportarNf3e'), inpNf3e = document.getElementById('nfeImportarNf3eInput');
+    if(btnNf3e && inpNf3e){
+      btnNf3e.addEventListener('click', ()=>inpNf3e.click());
+      inpNf3e.addEventListener('change', async ()=>{
+        const arquivos = [...inpNf3e.files]; if(!arquivos.length) return;
+        const orig = btnNf3e.textContent; btnNf3e.disabled = true; btnNf3e.textContent = `Importando… (${arquivos.length})`;
+        const fd = new FormData(); arquivos.forEach(f=>fd.append('arquivos', f, f.name));
+        try{
+          const r = await api(`/nfe/nf3e/${empresaId}/importar`, { method:'POST', body: fd });
+          const ok = r.resultados.filter(x=>x.status==='importado'), dup = r.resultados.filter(x=>x.status==='duplicado'), err = r.resultados.filter(x=>x.status==='erro');
+          const partes = [];
+          if(ok.length) partes.push(`${ok.length} conta(s) de energia importada(s)`);
+          if(dup.length) partes.push(`${dup.length} já estava(m) importada(s)`);
+          if(err.length) partes.push(`${err.length} com erro: ${err.slice(0,2).map(x=>x.motivo).join(' · ')}`);
+          toast(partes.join(', ') || 'Nenhum arquivo importado.', err.length && !ok.length && !dup.length ? 'err' : 'ok');
+          if(ok.length){ irParaAba('recebida'); }
+        }catch(e){ toast(e.message,'err'); }
+        finally{ inpNf3e.value=''; btnNf3e.disabled=false; btnNf3e.textContent=orig; }
+      });
+    }
     const btnImportarXml = document.getElementById('btnNfeImportarXml');
     const inputImportarXml = document.getElementById('nfeImportarXmlInput');
     btnImportarXml.addEventListener('click', ()=>inputImportarXml.click());
@@ -12411,6 +12523,17 @@ async function pageNfeBusca(){
         btnImportarXml.disabled = false; btnImportarXml.textContent = '⬆️ Importar XML';
       }
     });
+    // Comparativo Domínio x site (só escritório — o botão nem é montado pro perfil Cliente).
+    const btnCompDominio = document.getElementById('btnNfeCompDominio');
+    const inputCompDominio = document.getElementById('nfeCompDominioInput');
+    if(btnCompDominio && inputCompDominio){
+      btnCompDominio.addEventListener('click', ()=>inputCompDominio.click());
+      inputCompDominio.addEventListener('change', ()=>{
+        const arq = inputCompDominio.files && inputCompDominio.files[0];
+        inputCompDominio.value = '';
+        if(arq) nfeCompDominioRodar(arq, empresaId);
+      });
+    }
     const NFE_DOC_TIPO_OPCOES = [
       {id:'', label:'Todos'}, {id:'nfe', label:'NF-e'}, {id:'nfce', label:'NFC-e'}, {id:'nfse', label:'NFS-e'},
       {id:'cte', label:'CT-e'}, {id:'nf3e', label:'NF3-e'}, {id:'satcfe', label:'SAT-CF-e'},
