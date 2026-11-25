@@ -14531,6 +14531,9 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
     const ehEmitida = r.direcao === "emitida";
     const cpCnpj = ehEmitida ? r.destinatarioCnpj : r.emitenteCnpj;
     const cpNome = (ehEmitida ? r.destinatarioNome : r.emitenteNome) || "(sem nome)";
+    // NFS-e com retenção: valor_total guarda o LÍQUIDO (vLiq, o que se paga); no relatório vale o valor do
+    // SERVIÇO (vServ = valor contábil, igual ao Acompanhamento de Entradas do Domínio — achado 2026-11-25).
+    if (r.tipo === "nfse") { const vs = Number(String(r.xml).match(/<vServ>([\d.]+)<\/vServ>/)?.[1]); if (vs > 0) r.valorTotal = vs; }
     const nota = { ...r, tipo: r.tipo, itens: detalhe ? detalhe.itens : null, contraparteNome: cpNome, contraparteCnpj: cpCnpj || null };
     if (r.notaCancelada) { canceladas.push(nota); continue; }
     if (r.tipo === "cte" && !ehEmitida && empresaDoc) {
