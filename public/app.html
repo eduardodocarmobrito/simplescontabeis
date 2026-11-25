@@ -11454,6 +11454,60 @@ function rtAmpliarPeriodo(d){
       ate.dispatchEvent(new Event('change'));
     }
   }
+// Fornecedores do período sem e-mail de notificação (produtor rural PF fica fora: não costuma ter e-mail de faturamento).
+function rtFornecedoresNotificaveis(d){ return d.fornecedores.filter(f=>f.regime!=='pf'); }
+function rtSemEmailQtd(d){ return rtFornecedoresNotificaveis(d).filter(f=>!(f.emailsNotificacao||[]).length).length; }
+// Lista dos fornecedores com o campo de e-mail: aba "Sem e-mail" (com inconsistência primeiro) e aba "Configurados".
+function rtEmailsFornecedoresModal(d, abaInicial){
+  let aba = abaInicial || (rtSemEmailQtd(d) ? 'sem' : 'com');
+  let busca = '';
+  const cliente = STATE.user.perfil==='Cliente';
+  const ordenar = l=>l.slice().sort((a,b)=>(b.alta+b.media)-(a.alta+a.media) || (b.perda2027Anual||0)-(a.perda2027Anual||0) || b.valor-a.valor);
+  const desenhar = ()=>{
+    const todos = rtFornecedoresNotificaveis(d);
+    const sem = ordenar(todos.filter(f=>!(f.emailsNotificacao||[]).length)), com = ordenar(todos.filter(f=>(f.emailsNotificacao||[]).length));
+    const termo = normalizaTxt(busca);
+    const lista = (aba==='sem'?sem:com).filter(f=>!termo || normalizaTxt(f.nome+' '+f.cnpj).includes(termo));
+    openModal(`
+      <h3>E-mails dos fornecedores para a notificação</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin:-4px 0 10px; text-align:justify;">O e-mail fica amarrado ao CNPJ do fornecedor. Com o envio automático ligado, cada NF-e nova dele com inconsistência é enviada para estes endereços (até 5, separados por vírgula). Fornecedores do período ${esc(fmtDateIso(d.periodo.de))} a ${esc(fmtDateIso(d.periodo.ate))}.</p>
+      <div class="tabs" style="margin-bottom:10px;">
+        <div class="tab ${aba==='sem'?'active':''}" data-aba="sem">Sem e-mail <span class="tag ${sem.length?'warn':'ok'}">${sem.length}</span></div>
+        <div class="tab ${aba==='com'?'active':''}" data-aba="com">Configurados <span class="tag ok">${com.length}</span></div>
+      </div>
+      <div class="field" style="max-width:360px;"><input type="text" id="rtEmFiltro" placeholder="Buscar fornecedor ou CNPJ…" value="${esc(busca)}"></div>
+      <div style="max-height:56vh; overflow:auto;">
+      ${lista.length ? `<table class="data-table"><thead><tr><th>Fornecedor</th><th>Inconsistências</th><th style="min-width:320px;">E-mail(s)</th><th></th></tr></thead><tbody>
+        ${lista.map(f=>`<tr data-cnpj="${esc(f.cnpj)}">
+          <td><b>${esc(f.nome)}</b><div class="rt-mut" style="font-size:11px;">${esc(fmtCnpjCpf(f.cnpj))}${f.uf?' · '+esc(f.uf):''} · ${esc(f.regimeLabel||'')}</div></td>
+          <td style="white-space:nowrap;">${f.alta?`<span style="color:#d03b3b;">⛔ ${f.alta}</span> `:''}${f.media?`<span style="color:#ec835a;">⚠ ${f.media}</span> `:''}${f.baixa?`<span class="rt-mut">• ${f.baixa}</span>`:''}${!f.alta&&!f.media&&!f.baixa?'<span style="color:#0ca30c;">✔ sem</span>':''}</td>
+          <td><input type="text" class="rtEmInput" value="${esc((f.emailsNotificacao||[]).join(', '))}" placeholder="fiscal@fornecedor.com.br" style="width:100%;"></td>
+          <td style="white-space:nowrap;"><button class="btn small primary rtEmSalvar">Salvar</button></td>
+        </tr>`).join('')}</tbody></table>` : `<div class="empty-state">${termo ? 'Nenhum fornecedor encontrado.' : aba==='sem' ? '✔ Todos os fornecedores do período já têm e-mail.' : 'Nenhum fornecedor com e-mail ainda.'}</div>`}
+      </div>
+      <div class="modal-actions"><button class="btn primary" id="rtEmFechar">Fechar</button></div>`, 'min(1100px, 95vw)');
+    document.querySelectorAll('#modalBody .tab[data-aba]').forEach(t=>t.addEventListener('click', ()=>{ aba = t.dataset.aba; desenhar(); }));
+    const filtro = document.getElementById('rtEmFiltro');
+    filtro.addEventListener('input', ()=>{ busca = filtro.value; const pos = filtro.selectionStart; desenhar(); const f2 = document.getElementById('rtEmFiltro'); f2.focus(); f2.setSelectionRange(pos,pos); });
+    document.getElementById('rtEmFechar').addEventListener('click', ()=>{ closeModal(); rtNotifAutoCarregar(d); });
+    document.querySelectorAll('#modalBody tr[data-cnpj]').forEach(tr=>{
+      const inp = tr.querySelector('.rtEmInput'), btn = tr.querySelector('.rtEmSalvar');
+      const salvar = async ()=>{
+        const f = d.fornecedores.find(x=>x.cnpj===tr.dataset.cnpj);
+        btn.disabled = true;
+        try{
+          const r = await api(cliente ? '/reforma/minha-empresa/fornecedor-email' : '/reforma/fornecedor-email', { method:'PUT', body:{ empresaId: d.empresa.id, cnpj: f.cnpj, emails: inp.value } });
+          f.emailsNotificacao = r.emails;
+          toast(r.emails.length ? `E-mail de ${f.nome} salvo.` : `E-mail de ${f.nome} removido.`, 'ok');
+          desenhar();
+        }catch(e){ inp.style.borderColor='var(--debit)'; inp.focus(); toast(e.message,'err'); btn.disabled = false; }
+      };
+      btn.addEventListener('click', salvar);
+      inp.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); salvar(); } });
+    });
+  };
+  desenhar();
+}
 // Card "Notificação automática dos fornecedores" (entradas): status, ligar/desligar (Administrador), envios.
 async function rtNotifAutoCarregar(d){
   const box = document.getElementById('rtNotifAuto');
@@ -11469,6 +11523,7 @@ async function rtNotifAutoCarregar(d){
       ${s.podeLigar && s.ativo ? '<button class="btn small" id="rtNotifRodar">Rodar agora</button>' : ''}
     </div>
     <div class="rt-card-s" style="text-align:justify;">Quando uma NF-e de entrada cair na auditoria com inconsistência, o robô envia ao fornecedor a notificação (mesmo texto do "Copiar notificação") com o relatório completo em PDF. Cada nota é avisada uma vez; roda de hora em hora, depois da validação na Calculadora RFB. O e-mail do fornecedor é cadastrado na janela dele (clique no fornecedor no ranking).</div>
+    <div style="margin:8px 0;"><button class="btn small" id="rtEmailsForn">📧 E-mails dos fornecedores ${rtSemEmailQtd(d)?`<span class="tag warn" style="margin-left:4px;">${rtSemEmailQtd(d)} sem e-mail</span>`:'<span class="tag ok" style="margin-left:4px;">todos com e-mail</span>'}</button></div>
     <div style="font-size:13px; margin:6px 0;">${s.ativo?`Avisando notas emitidas a partir de <b>${fmtDateIso(s.desde)}</b> · `:''}<b>${s.fornecedoresComEmail}</b> fornecedor(es) com e-mail cadastrado · ${rem?`envio ${rem}`:'<span style="color:var(--debit);">nenhum e-mail de envio configurado (nem da empresa, nem o corporativo do escritório)</span>'}</div>
     ${s.podeLigar ? `<div class="row" style="gap:10px; align-items:flex-end; flex-wrap:wrap; margin-top:6px;">
       <label class="checkbox-row" style="margin:0 0 9px;"><input type="checkbox" id="rtNotifAtivo" ${s.ativo?'checked':''}> Envio automático ligado</label>
@@ -11477,6 +11532,7 @@ async function rtNotifAutoCarregar(d){
     </div>` : (cliente ? '<div class="rt-mut" style="font-size:12px;">Para ligar ou desligar o envio automático, fale com o seu escritório de contabilidade.</div>' : '')}
     ${s.envios.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="data-table"><thead><tr><th>Quando</th><th>Fornecedor</th><th>NF-e</th><th>Para</th><th>Situação</th></tr></thead><tbody>${s.envios.map(e=>`<tr><td style="white-space:nowrap;">${fmtDateHora(e.criado_em)}</td><td>${esc(e.fornecedor||'')}<div class="rt-mut" style="font-size:11px;">${esc(fmtCnpjCpf(e.cnpj))}</div></td><td>${esc(e.notas||'')}</td><td style="font-size:12px;">${esc(e.emails||'')}</td><td>${e.status==='enviado'?'<span class="tag ok">Enviado</span>':`<span class="tag bad" title="${esc(e.erro||'')}">Erro</span><div style="font-size:11px; color:var(--debit);">${esc((e.erro||'').slice(0,120))}</div>`}</td></tr>`).join('')}</tbody></table></div>` : ''}
   </div>`;
+  document.getElementById('rtEmailsForn').addEventListener('click', ()=>rtEmailsFornecedoresModal(d));
   if(s.podeLigar){
     setupDatePicker('rtNotifDesde','rtNotifDesde_text');
     document.getElementById('rtNotifSalvar').addEventListener('click', async ()=>{
