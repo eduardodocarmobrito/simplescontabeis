@@ -35,9 +35,7 @@ export const FUNCIONALIDADES_BASE: { titulo: string; texto: string }[] = [
   { titulo: "Integra Contador (SERPRO)", texto: "DAS, parcelamentos, caixa postal do e-CAC e mensagens do Regularize monitorados automaticamente para todas as empresas." },
   { titulo: "Certificados digitais e licenças", texto: "Controle de vencimento dos certificados e das licenças e alvarás, com aviso antes de vencer." },
   { titulo: "Contratos com assinatura eletrônica", texto: "Modelos próprios, contrato, aditivo e distrato gerados com os dados da empresa e enviados para assinatura eletrônica." },
-  { titulo: "Financeiro e cobrança de honorários", texto: "Honorários, cobranças por Pix/boleto/cartão e acompanhamento de inadimplência." },
   { titulo: "DP/RH", texto: "Programação de férias, controle de vencidas e rotinas de FGTS Digital." },
-  { titulo: "Contabilidade e conciliação bancária", texto: "Rotinas contábeis e conciliação dos extratos (Open Finance/OFX)." },
   { titulo: "Relatórios, usuários e permissões", texto: "Relatórios gerenciais, controle de acesso por módulo e por empresa, e registro de quem fez o quê." },
 ];
 export const DESCRICAO_MODULO: Record<string, string> = {
