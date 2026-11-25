@@ -286,7 +286,7 @@ Simples Contábeis · Redenção/PA, ${dataBR(meta.data)} · Proposta válida at
 </div>
 
 <h2>1. O que o módulo encontrou nas notas de vocês</h2>
-<p class="txt">Período: <b>${dataBR(a.periodo.de)} a ${dataBR(a.periodo.ate)}</b>. Cada item foi conferido contra a NT 2025.002 (leiaute IBS/CBS da NF-e). O NCM e o cClassTrib foram validados direto na API oficial da Receita Federal (Calculadora de Tributos RFB/CGIBS).</p>
+<p class="txt">Período: <b>${dataBR(a.periodo.de)} a ${dataBR(a.periodo.ate)}</b>${a.periodo.de === "2026-08-03" ? " — a partir de 03/08/2026, quando informar o IBS/CBS na NF-e passou a ser obrigatório" : ""}. Cada item foi conferido contra a NT 2025.002 (leiaute IBS/CBS da NF-e). O NCM e o cClassTrib foram validados direto na API oficial da Receita Federal (Calculadora de Tributos RFB/CGIBS).</p>
 <table class="t">
   <thead><tr><th style="width:27%">Empresa</th><th class="num" style="width:8%">NF-e</th><th class="num" style="width:8%">Itens</th><th class="num" style="width:15%">Compras</th><th class="num" style="width:12%">Sem falha</th><th class="num" style="width:13%">Fornec. c/ falha</th><th class="num" style="width:17%">Crédito 2027/ano</th></tr></thead>
   <tbody>${linhasEmp}
@@ -360,7 +360,7 @@ ${c.observacoes ? `<div class="destaque"><b>Condições:</b> ${esc(c.observacoes
 
 <h2>7. Premissas e ressalvas</h2>
 <div class="rodape-nota">
-<b>Base dos números:</b> NF-e de entrada captadas nos CNPJs da proposta de ${dataBR(a.periodo.de)} a ${dataBR(a.periodo.ate)}, auditadas pelo módulo de Reforma Tributária da Simples Contábeis. Foram excluídas as notas canceladas e as transferências entre estabelecimentos do próprio grupo. O "crédito 2027 em jogo" é a diferença entre o crédito que as compras dariam se viessem corretas de fornecedor do regime regular e o crédito efetivamente documentado. Ele é projetado com a CBS de 2027 estimada (a alíquota ainda depende de resolução do Senado, LC 214/2025, art. 347) e anualizado linearmente a partir de ${String(a.periodo.meses).replace(".", ",")} meses. Compras sazonais podem fazer o valor anual real ser maior ou menor.<br>
+<b>Base dos números:</b> NF-e de entrada captadas nos CNPJs da proposta de ${dataBR(a.periodo.de)}${a.periodo.de === "2026-08-03" ? " (início da obrigação de informar o IBS/CBS na NF-e)" : ""} a ${dataBR(a.periodo.ate)}, auditadas pelo módulo de Reforma Tributária da Simples Contábeis. Foram excluídas as notas canceladas e as transferências entre estabelecimentos do próprio grupo. O "crédito 2027 em jogo" é a diferença entre o crédito que as compras dariam se viessem corretas de fornecedor do regime regular e o crédito efetivamente documentado. Ele é projetado com a CBS de 2027 estimada (a alíquota ainda depende de resolução do Senado, LC 214/2025, art. 347) e anualizado linearmente a partir de ${String(a.periodo.meses).replace(".", ",")} meses. Compras sazonais podem fazer o valor anual real ser maior ou menor.<br>
 <b>Custo do analista:</b> salário de mercado da região e encargos do Lucro Presumido. A dedicação considerada é de ${c.dedicacaoPct}% de um profissional, conforme o volume de notas. Não inclui recrutamento, treinamento e rotatividade.<br>
 <b>Economias não quantificadas:</b> são economias reais, mas dependem de fiscalização, do comportamento dos fornecedores e de regulamentação ainda em curso. Por isso não entram na soma.<br>
 Esta proposta não é garantia de resultado nem parecer jurídico. A recuperação efetiva de cada crédito depende da correção pelo fornecedor e da escrituração regular.

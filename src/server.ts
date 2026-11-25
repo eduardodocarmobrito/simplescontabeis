@@ -26785,8 +26785,11 @@ function propostaProximoNumero(escritorioId: number, ano: number): number {
 async function propostaAnalisar(escritorioId: number, empresaIds: number[]) {
   const ate = propostaHojeIso();
   const [ano, mes] = [Number(ate.slice(0, 4)), Number(ate.slice(5, 7))];
-  const ini = new Date(Date.UTC(ano, mes - 1 - 3, 1));
-  const de = ini.toISOString().slice(0, 10);
+  // Análise a partir de 03/08/2026 — início da obrigação de informar o IBS/CBS na NF-e (NT 2025.002); antes
+  // disso a nota sem o grupo era legal e não serve de base (pedido 2026-11-25). Janela máxima de 12 meses.
+  const INICIO_OBRIGACAO_IBSCBS = "2026-08-03";
+  const umAnoAtras = new Date(Date.UTC(ano - 1, mes - 1, Number(ate.slice(8, 10)) + 1)).toISOString().slice(0, 10);
+  const de = umAnoAtras > INICIO_OBRIGACAO_IBSCBS ? umAnoAtras : INICIO_OBRIGACAO_IBSCBS;
   const entradas: propostas.EmpresaEntrada[] = await Promise.all(empresaIds.map(async (id) => {
     const e = sqlite.prepare(`SELECT id, nome, cnpj, regime_tributario, cidade, uf, cnae_principal_json FROM empresas WHERE id = ? AND escritorio_id = ?`).get(id, escritorioId) as any;
     if (!e) throw new Error("Empresa não encontrada.");

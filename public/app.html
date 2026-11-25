@@ -17535,7 +17535,7 @@ async function renderPropostaEditor(id){
       <div>
         <span class="link-discreto" id="ppVoltar">← Voltar para as propostas</span>
         <h2 style="margin:6px 0 2px;">Proposta nº ${esc(P.numero)} · ${esc(P.clienteNome)} <span class="tag ${st.c}" style="vertical-align:middle;">${st.l}</span></h2>
-        <div style="font-size:12.5px; color:var(--ink-soft);">Notas de ${propDataBR(a.periodo.de)} a ${propDataBR(a.periodo.ate)} · análise de ${fmtDateHora(a.geradoEm)}</div>
+        <div style="font-size:12.5px; color:var(--ink-soft);">Notas de ${propDataBR(a.periodo.de)}${a.periodo.de==='2026-08-03'?' (início da obrigação de informar o IBS/CBS)':''} a ${propDataBR(a.periodo.ate)} · análise de ${fmtDateHora(a.geradoEm)}</div>
       </div>
       <div class="row" style="gap:8px;">
         <button class="btn" id="ppPdf">⬇ Baixar PDF</button>
