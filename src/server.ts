@@ -12939,7 +12939,39 @@ function nfeDocNomeArquivo(row: any, extensao: string): string {
 // do XML, sem depender de nenhuma API do governo); NF-e/NFC-e usa uma representação simplificada
 // própria (não é o DANFE oficial certificado — layout mais simples, mas com os mesmos dados do XML).
 // Eventos não têm representação em PDF. Cache em disco (nfe_documentos.pdf_path) — só renderiza uma vez.
+// Nota cancelada (evento de cancelamento da PRÓPRIA nota — mesma regra que risca a linha na Busca de XML):
+// o PDF sai com o carimbo CANCELADA em cada página (pedido 2026-11-25). O cache guarda o PDF limpo.
+function nfeDocCancelado(row: any): boolean {
+  if (!row?.chave_acesso || row.tipo === "evento") return false;
+  return !!sqlite.prepare(`SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = ? AND ev.tipo = 'evento' AND ev.chave_acesso = ?
+      AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%' LIMIT 1`).get(row.escritorio_id, row.chave_acesso);
+}
+async function pdfCarimbarCancelada(pdf: Buffer): Promise<Buffer> {
+  const { PDFDocument, StandardFonts, rgb, degrees } = await import("pdf-lib");
+  const doc = await PDFDocument.load(pdf, { ignoreEncryption: true });
+  const fonte = await doc.embedFont(StandardFonts.HelveticaBold);
+  const vermelho = rgb(0.82, 0.1, 0.1);
+  for (const pg of doc.getPages()) {
+    const { width, height } = pg.getSize();
+    // Faixa no topo + marca d'água diagonal no meio da página.
+    const faixa = "NOTA FISCAL CANCELADA";
+    const tamFaixa = 14, larguraFaixa = fonte.widthOfTextAtSize(faixa, tamFaixa);
+    pg.drawRectangle({ x: 0, y: height - 26, width, height: 26, color: vermelho, opacity: 0.9 });
+    pg.drawText(faixa, { x: (width - larguraFaixa) / 2, y: height - 19, size: tamFaixa, font: fonte, color: rgb(1, 1, 1) });
+    const texto = "CANCELADA";
+    const tam = Math.min(width, height) / 5.2, largura = fonte.widthOfTextAtSize(texto, tam);
+    const ang = Math.atan2(height, width), cos = Math.cos(ang), sin = Math.sin(ang);
+    pg.drawText(texto, { x: width / 2 - (largura / 2) * cos + (tam / 3) * sin, y: height / 2 - (largura / 2) * sin - (tam / 3) * cos, size: tam, font: fonte, color: vermelho, opacity: 0.28, rotate: degrees((ang * 180) / Math.PI) });
+  }
+  return Buffer.from(await doc.save());
+}
 async function nfeDocumentoObterPdf(row: any): Promise<{ pdf: Buffer | null; erro: string | null }> {
+  const r = await nfeDocumentoObterPdfBase(row);
+  if (!r.pdf || !nfeDocCancelado(row)) return r;
+  try { return { pdf: await pdfCarimbarCancelada(r.pdf), erro: null }; }
+  catch (e: any) { console.warn(`[pdf] carimbo de cancelada falhou (doc ${row.id}): ${e.message}`); return r; }
+}
+async function nfeDocumentoObterPdfBase(row: any): Promise<{ pdf: Buffer | null; erro: string | null }> {
   if (row.tipo === "evento") return { pdf: null, erro: "Eventos não têm representação em PDF — baixe o XML." };
   // Nota que o Extrato NFE conhece (veio de lá ou também está lá) → usa o DANFE/DACTE/DANFSe deles,
   // pra ficar idêntico ao que aparece no Extrato NFE. Falhou (fora do ar, nota removida) → cai no nosso.
