@@ -6,7 +6,7 @@
 // Modelo validado com o cliente Grupo Raízes em 2026-11-23 (PDF feito à mão, depois automatizado).
 
 export interface EmpresaEntrada {
-  empresa: { id: number; nome: string; cnpj: string; regime: string; regimeLabel: string; tomaCredito: boolean; cidade?: string | null; uf?: string | null; cnae?: string | null };
+  empresa: { id: number; nome: string; cnpj: string; regime: string; regimeLabel: string; tomaCredito: boolean; tomaCreditoMotivo?: string | null; cidade?: string | null; uf?: string | null; cnae?: string | null };
   auditoria: any; // retorno de reformaCalcularAuditoria(..., semLimite = true, "entrada")
   extras: { nfseTomadas12m: number; nfseTomadasValor12m: number; cteTomados: number; cancelamentos: number; exportacoes12m: number; exportacoesValor12m: number; documentosPeriodo: number };
 }
@@ -109,7 +109,7 @@ export function montarAnalise(entradas: EmpresaEntrada[], periodo: { de: string;
       if (n.status === "ncm_vencido") ncmsVencidos++;
     }
     return {
-      id: empresa.id, nome: empresa.nome, cnpj: empresa.cnpj, regime: empresa.regime, regimeLabel: empresa.regimeLabel, tomaCredito: empresa.tomaCredito,
+      id: empresa.id, nome: empresa.nome, cnpj: empresa.cnpj, regime: empresa.regime, regimeLabel: empresa.regimeLabel, tomaCredito: empresa.tomaCredito, tomaCreditoMotivo: empresa.tomaCreditoMotivo || null,
       cidade: empresa.cidade || "", uf: empresa.uf || "", cnae: empresa.cnae || "",
       notas, itens: d.kpis.itens, valor: r2(fornsExternos.reduce((a: number, f: any) => a + f.valor, 0)),
       notasSemFalha: Math.max(0, notas - notasComFalha), notasComFalha,
@@ -293,7 +293,7 @@ Simples Contábeis · Redenção/PA, ${dataBR(meta.data)} · Proposta válida at
     ${a.empresas.length > 1 ? `<tr class="tot"><td>Total</td><td class="num">${num(t.notas)}</td><td class="num">${num(t.itens)}</td><td class="num">${brl0(t.valor)}</td><td class="num">${pctSemFalha}%</td><td class="num">${t.fornecedoresComFalha}</td><td class="num">${brl0(t.perda2027Ano)}</td></tr>` : ""}
   </tbody>
 </table>
-<p class="small">${t.notas ? `Só ${pctSemFalha}% das notas chegaram sem falha. ` : ""}O volume é de cerca de ${a.volume.notasMes} NF-e de entrada por mês${a.volume.nfseMes ? ` e ${a.volume.nfseMes} NFS-e de serviços tomados por mês` : ""}, de ${num(t.fornecedores)} fornecedores. Ninguém confere isso à mão nota a nota.${naoRegular.length ? ` ${naoRegular.map((e) => esc(nomeCurto(e.nome)) + " (" + fmtCnpj(e.cnpj) + ")").join(", ")} ${naoRegular.length > 1 ? "estão" : "está"} no ${esc(naoRegular[0].regimeLabel)} e só toma crédito se optar pelo regime regular, por isso o crédito dessas inscrições não entra na soma.` : ""}</p>
+<p class="small">${t.notas ? `Só ${pctSemFalha}% das notas chegaram sem falha. ` : ""}O volume é de cerca de ${a.volume.notasMes} NF-e de entrada por mês${a.volume.nfseMes ? ` e ${a.volume.nfseMes} NFS-e de serviços tomados por mês` : ""}, de ${num(t.fornecedores)} fornecedores. Ninguém confere isso à mão nota a nota.${naoRegular.length ? ` ${naoRegular.map((e) => esc(nomeCurto(e.nome)) + " (" + fmtCnpj(e.cnpj) + ")").join(", ")} ${naoRegular.length > 1 ? "estão" : "está"} no ${esc(naoRegular[0].regimeLabel)}${naoRegular.every((e) => e.regime === "produtor_rural") ? ", sem ser contribuinte do IBS/CBS (receita abaixo de R$ 3,6 milhões — LC 214, art. 164)," : ""} e só toma crédito se optar pelo regime regular, por isso o crédito dessas inscrições não entra na soma.` : ""}</p>
 
 ${a.erros.length ? `<h2>2. Erros encontrados e quanto custam</h2>
 <table class="t">

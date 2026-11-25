@@ -13374,6 +13374,41 @@ const REFORMA_RECO_SAIDA: Record<string, string> = {
   MEI_COM_IBSCBS: "MEI não informa o grupo IBS/CBS — ajustar o emissor.",
 };
 const REFORMA_RECO_SAIDA_PADRAO = "Corrigir a parametrização do IBS/CBS no emissor (CST/cClassTrib, alíquota, base e valores conforme a NT 2025.002) e emitir CC-e ou NF-e complementar quando cabível.";
+// Produtor rural (PF ou PJ) e o IBS/CBS — LC 214/2025, art. 164: com receita no ano-calendário ACIMA de
+// R$ 3,6 milhões (atualizado pelo IPCA a partir de 2027) é contribuinte obrigatório do regime regular e TOMA
+// crédito nas compras; abaixo disso não é contribuinte (não toma crédito — quem compra dele é que tem o
+// crédito presumido), salvo se optar pelo regime regular. Antes daqui todo produtor rural caía em "não toma
+// crédito" (achado 2026-11-25: produtor PF com dezenas de milhões em compras ficava fora da soma da proposta).
+const PRODUTOR_RURAL_LIMITE_RECEITA = 3_600_000;
+function produtorRuralContribuinte(escritorioId: number, empresaId: number): { contribuinte: boolean; origem: "opcao_sim" | "opcao_nao" | "receita_dominio" | "receita_notas" | "compras" | "abaixo"; estimado: boolean; motivo: string } {
+  const brl = (v: number) => "R$ " + (v / 1e6).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " mi";
+  let opcao = "auto";
+  try { const r = sqlite.prepare(`SELECT premissas_json FROM reforma_diagnostico_premissas WHERE empresa_id = ?`).get(empresaId) as any; if (r) opcao = JSON.parse(r.premissas_json).produtorContribuinte || "auto"; } catch {}
+  if (opcao === "sim") return { contribuinte: true, origem: "opcao_sim", estimado: false, motivo: "contribuinte do IBS/CBS (informado: receita acima de R$ 3,6 mi ou optante pelo regime regular)" };
+  if (opcao === "nao") return { contribuinte: false, origem: "opcao_nao", estimado: false, motivo: "não contribuinte do IBS/CBS (informado: receita abaixo de R$ 3,6 mi, sem opção pelo regime regular)" };
+  const ate = new Date(), de = new Date(ate.getFullYear() - 1, ate.getMonth(), ate.getDate() + 1);
+  const iso = (x: Date) => x.toISOString().slice(0, 10);
+  // 1) Receita real do relatório Entradas/Saídas do Domínio (anualizada), quando importado.
+  const dom = sqlite.prepare(`SELECT SUM(saidas) AS saidas, SUM(servicos) AS servicos, COUNT(*) AS meses FROM entradas_saidas_dados WHERE empresa_id = ? AND (ano * 100 + mes) >= ? AND (ano * 100 + mes) <= ?`)
+    .get(empresaId, de.getFullYear() * 100 + de.getMonth() + 1, ate.getFullYear() * 100 + ate.getMonth() + 1) as any;
+  if (dom && Number(dom.meses) > 0) {
+    const receita = ((Number(dom.saidas) || 0) + (Number(dom.servicos) || 0)) * (12 / Number(dom.meses));
+    return receita >= PRODUTOR_RURAL_LIMITE_RECEITA
+      ? { contribuinte: true, origem: "receita_dominio", estimado: false, motivo: `contribuinte do IBS/CBS: receita de ${brl(receita)}/ano (Domínio) acima de R$ 3,6 mi (LC 214, art. 164)` }
+      : { contribuinte: false, origem: "receita_dominio", estimado: false, motivo: `não contribuinte: receita de ${brl(receita)}/ano (Domínio) abaixo de R$ 3,6 mi — pode optar pelo regime regular (LC 214, art. 164)` };
+  }
+  const canc = `EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo='evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%')`;
+  const emp = sqlite.prepare(`SELECT REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') AS doc FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const doc = emp?.doc || "";
+  const soma = (cond: string) => Number((sqlite.prepare(`SELECT SUM(COALESCE(d.valor_total,0)) AS v FROM nfe_documentos d WHERE d.escritorio_id = ? AND d.empresa_id = ? AND d.tipo IN ('nfe','nfce') AND ${cond} AND substr(d.data_emissao,1,10) BETWEEN ? AND ? AND NOT ${canc}`).get(escritorioId, empresaId, doc, iso(de), iso(ate)) as any)?.v) || 0;
+  // 2) Notas emitidas por ele: só CONFIRMA (vendas de produtor costumam faltar — nota avulsa/emitida pelo comprador).
+  const vendas = soma(`d.emitente_cnpj = ?`);
+  if (vendas >= PRODUTOR_RURAL_LIMITE_RECEITA) return { contribuinte: true, origem: "receita_notas", estimado: false, motivo: `contribuinte do IBS/CBS: vendas de ${brl(vendas)} nos últimos 12 meses, acima de R$ 3,6 mi (LC 214, art. 164)` };
+  // 3) Sem a receita: compras acima do limite indicam receita acima dele — estimado, pedir confirmação.
+  const compras = soma(`COALESCE(d.emitente_cnpj,'') <> ?`);
+  if (compras >= PRODUTOR_RURAL_LIMITE_RECEITA) return { contribuinte: true, origem: "compras", estimado: true, motivo: `contribuinte do IBS/CBS (estimado): compras de ${brl(compras)} em 12 meses indicam receita acima de R$ 3,6 mi — confirme na Análise de regime` };
+  return { contribuinte: false, origem: "abaixo", estimado: true, motivo: `não contribuinte (estimado): sem receita informada e compras de ${brl(compras)} em 12 meses, abaixo de R$ 3,6 mi — pode optar pelo regime regular; confirme na Análise de regime` };
+}
 function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: string, ate: string, semLimite = false, direcao: "entrada" | "saida" = "entrada") {
   const saida = direcao === "saida";
   const empresa = sqlite
@@ -13386,7 +13421,9 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
   const regime = empresa.regime_tributario || "simples_nacional";
   // Crédito de IBS/CBS é do contribuinte do regime regular (Lucro Real e Presumido). O optante do Simples
   // só se credita se optar pelo regime regular (LC 214, art. 47 §9º, I) — aí a análise é de conformidade.
-  const tomaCredito = regime === "lucro_real" || regime === "lucro_presumido";
+  // Produtor rural: contribuinte (e toma crédito) se a receita passa de R$ 3,6 mi ou se optou (art. 164).
+  const produtor = regime === "produtor_rural" ? produtorRuralContribuinte(escritorioId, empresaId) : null;
+  const tomaCredito = regime === "lucro_real" || regime === "lucro_presumido" || !!produtor?.contribuinte;
   const emitExpr = `d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','')`;
   const canceladaExpr = `EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo='evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%')`;
   const docs = sqlite
@@ -13555,7 +13592,7 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
   const perda2027 = Math.max(0, r2(ref27 - aprov27));
   return {
     direcao,
-    empresa: { id: empresa.id, nome: empresa.nome, cnpj: empresa.cnpj, regime, regimeLabel: REGIME_CLIENTE_LABEL[regime] || regime, tomaCredito, nfseHabilitado: !!empresa.nfse_habilitado },
+    empresa: { id: empresa.id, nome: empresa.nome, cnpj: empresa.cnpj, regime, regimeLabel: REGIME_CLIENTE_LABEL[regime] || regime, tomaCredito, tomaCreditoMotivo: produtor?.motivo || null, tomaCreditoEstimado: !!produtor?.estimado, nfseHabilitado: !!empresa.nfse_habilitado },
     periodo: { de, ate, meses },
     fontes: {
       tabela: reformaAuditoria.VERSAO_TABELAS.cClassTrib,
@@ -14191,6 +14228,8 @@ app.put("/api/reforma/diagnostico/premissas", blockCliente, requirePermissao("re
   if (["III", "IV", "V", "III/V"].includes(p.anexoServicos)) limpo.anexoServicos = p.anexoServicos;
   if ([0, 30, 60].includes(Number(p.reducaoSetorial))) limpo.reducaoSetorial = Number(p.reducaoSetorial);
   if ("acrescimoLc224" in p) limpo.acrescimoLc224 = !!p.acrescimoLc224;
+  // Produtor rural: é contribuinte do IBS/CBS? (auto = pela receita/compras; sim/não = informado — LC 214, art. 164)
+  if (["sim", "nao"].includes(p.produtorContribuinte)) limpo.produtorContribuinte = p.produtorContribuinte;
   sqlite.prepare(`INSERT INTO reforma_diagnostico_premissas (empresa_id, escritorio_id, premissas_json, atualizado_em) VALUES (?, ?, ?, datetime('now'))
     ON CONFLICT(empresa_id) DO UPDATE SET premissas_json = excluded.premissas_json, atualizado_em = datetime('now')`).run(empresaId, user.escritorioId, JSON.stringify(limpo));
   res.json({ ok: true });
@@ -26762,7 +26801,7 @@ async function propostaAnalisar(escritorioId: number, empresaIds: number[]) {
     let cnae: string | null = null;
     try { cnae = JSON.parse(e.cnae_principal_json || "null")?.codigo || null; } catch {}
     return {
-      empresa: { id, nome: e.nome, cnpj: e.cnpj, regime: auditoria.empresa.regime, regimeLabel: auditoria.empresa.regimeLabel, tomaCredito: auditoria.empresa.tomaCredito, cidade: e.cidade, uf: e.uf, cnae },
+      empresa: { id, nome: e.nome, cnpj: e.cnpj, regime: auditoria.empresa.regime, regimeLabel: auditoria.empresa.regimeLabel, tomaCredito: auditoria.empresa.tomaCredito, tomaCreditoMotivo: auditoria.empresa.tomaCreditoMotivo || null, cidade: e.cidade, uf: e.uf, cnae },
       auditoria,
       extras: { nfseTomadas12m: nfse.n, nfseTomadasValor12m: nfse.v, cteTomados: cte.n, cancelamentos: canc.n, exportacoes12m: exp.n, exportacoesValor12m: exp.v, documentosPeriodo: docs.n },
     };
