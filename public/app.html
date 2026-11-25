@@ -10927,8 +10927,34 @@ async function reformaRadMontar(painel, urlApi){
         </tr>`).join('')}</tbody>
       </table>` : `<div class="empty-state" style="color:#0ca30c;">✔ Nenhum crédito em risco no período — o destaque de IBS/CBS das compras está consistente.</div>`}
       <div class="rt-mut" style="font-size:11.5px; margin-top:10px;">A emissão do DARF do RAD é feita pela integração oficial com a Receita Federal (painel acima) — depende das credenciais do Receita Integra do escritório. Emissão plena do RAD a partir de jan/2027.</div>
-    </div>`;
+    </div>${radPerspectivaHtml(d)}`;
   radRfbMontar(radEmpresaId, radDe, radAte);
+}
+// Tabela "perspectiva" (demonstração pro cliente): as compras REAIS dos XMLs dele, a CBS destacada em
+// cada fornecedor e o que o RAD faz. Valores estimados — não é emissão. Aparece pro escritório e pro cliente.
+function radPerspectivaHtml(d){
+  const forn = (d.fornecedores||[]).filter(f=>f.creditoDestacado>0).sort((a,b)=>b.creditoDestacado-a.creditoDestacado).slice(0,60);
+  if(!forn.length) return '';
+  const totValor = forn.reduce((s,f)=>s+(f.valor||0),0);
+  const totCredito = forn.reduce((s,f)=>s+(f.creditoDestacado||0),0);
+  const totRisco = forn.reduce((s,f)=>s+(f.risco||0),0);
+  const linhas = forn.map(f=>`<tr>
+    <td><b>${esc(f.nome)}</b><div class="rt-mut" style="font-size:11px;">${esc(fmtCnpjCpf(f.cnpj))}${f.uf?' · '+esc(f.uf):''}</div></td>
+    <td style="text-align:right; white-space:nowrap;">${rtNum(f.notas||0)}</td>
+    <td style="text-align:right; white-space:nowrap;">${rtBRL(f.valor)}</td>
+    <td style="text-align:right; white-space:nowrap;"><b>${rtBRL(f.creditoDestacado)}</b></td>
+    <td>${f.risco>0 ? `<span style="color:#d03b3b;">⛔ Crédito em risco — pelo RAD você recolhe a CBS e <b>garante o crédito</b></span>` : `<span style="color:#0ca30c;">✔ Crédito ok — fornecedor com destaque consistente</span>`}</td>
+  </tr>`).join('');
+  return `<div class="card" style="overflow-x:auto;">
+    <h3 style="margin:0 0 4px;">📋 Perspectiva: suas compras e a CBS (como o RAD vai funcionar)</h3>
+    <p class="subtitle" style="margin:0 0 10px;">Demonstração com as <b>suas notas de compra reais</b> (extraídas dos XMLs). Mostra, por fornecedor, a CBS destacada no crédito e o que o Recolhimento pelo Adquirente (RAD) faz. <b>Valores estimados · simulação, não é emissão.</b></p>
+    <table class="data-table">
+      <thead><tr><th>Fornecedor</th><th style="text-align:right;">Notas</th><th style="text-align:right;">Compras</th><th style="text-align:right;">CBS no crédito</th><th>O que o RAD faz</th></tr></thead>
+      <tbody>${linhas}</tbody>
+      <tfoot><tr style="font-weight:700; background:var(--paper);"><td>Total</td><td style="text-align:right;">${rtNum(forn.reduce((s,f)=>s+(f.notas||0),0))}</td><td style="text-align:right;">${rtBRL(totValor)}</td><td style="text-align:right;">${rtBRL(totCredito)}</td><td>${totRisco>0?`<span style="color:#d03b3b;">${rtBRL(totRisco)} de crédito em risco — o RAD protege</span>`:'Créditos consistentes'}</td></tr></tfoot>
+    </table>
+    <div class="rt-mut" style="font-size:11.5px; margin-top:8px;">Como vai funcionar: para as compras com crédito em risco (fornecedor que pode não recolher a CBS), o <b>adquirente</b> usa o RAD para recolher a CBS da operação e <b>assegurar o crédito</b>, quitando o débito do fornecedor. A emissão do DARF é feita pela integração com a Receita Federal (operação plena a partir de jan/2027).</div>
+  </div>`;
 }
 // Painel de configuração + emissão do RAD via API da RFB (só escritório). Valida a conexão ao entrar.
 async function radRfbMontar(empresaId, de, ate, skipAuto){
@@ -11301,7 +11327,7 @@ function rtFornTabelaHtml(forn){
       <td>${rtRegimeChip(f.regime, f.regimeLabel)}</td>
       <td class="num">${rtNum(f.notas)}</td><td class="num">${rtBRL(f.valor)}</td><td class="num">${f.pctComGrupo}%</td>
       <td style="white-space:nowrap;">${f.alta?`<span style="color:#d03b3b;">⛔ ${f.alta}</span> `:''}${f.media?`<span style="color:#ec835a;">⚠ ${f.media}</span> `:''}${f.baixa?`<span class="rt-mut">• ${f.baixa}</span>`:''}${!f.alta&&!f.media&&!f.baixa?'<span style="color:#0ca30c;">✔</span>':''}</td>
-      <td class="num">${rtBRL(f.creditoDestacado)}${f.tipoCredito?`<div class="rt-mut" style="font-size:11px; white-space:nowrap;" title="${f.tipoCredito==='por_dentro'?'Simples Nacional recolhendo IBS/CBS dentro do DAS: o crédito fica limitado ao valor pago no Simples':'Regime regular: IBS/CBS destacado por fora, crédito integral'}">${f.tipoCredito==='por_dentro'?'por dentro (DAS)':'por fora (regime regular)'}</div>`:''}${f.risco?`<div style="color:#d03b3b; font-size:11px;">⛔ ${rtBRL(f.risco)} em risco</div>`:''}</td>
+      <td class="num">${rtBRL(f.creditoDestacado)}${f.tipoCredito?`<div class="rt-mut" style="font-size:11px; white-space:nowrap;" title="${f.tipoCredito==='por_dentro'?'Simples Nacional recolhendo IBS/CBS dentro do DAS: o crédito fica limitado ao valor pago no Simples':'Simples Nacional que optou pelo regime regular: IBS/CBS destacado por fora, crédito integral'}">${f.tipoCredito==='por_dentro'?'Simples: por dentro (DAS)':'Simples: por fora (regime regular)'}</div>`:''}${f.risco?`<div style="color:#d03b3b; font-size:11px;">⛔ ${rtBRL(f.risco)} em risco</div>`:''}</td>
       ${S?'':`<td class="num">${f.perda2027Anual?`<b title="${esc('Memória de cálculo'+String.fromCharCode(10)+(f.memoriaTexto||[]).join(String.fromCharCode(10)))}" style="cursor:help; border-bottom:1px dotted currentColor;">${rtBRL(f.perda2027Anual)}</b>${f.advertencia2027?` <span title="${esc(f.advertencia2027)}" style="cursor:help; color:#ec835a;">⚠</span>`:''}`:'—'}</td>`}
       <td style="white-space:nowrap;"><b>${f.score}</b> ${rtChip(RT_STATUS[f.status])}</td>
     </tr>`).join('')}</tbody></table>`;

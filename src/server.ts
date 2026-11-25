@@ -13412,7 +13412,8 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
       creditoDestacado: r2(f.creditoDestacado), risco: r2(f.risco), perda2027Anual, regras: [...f.regras], recomendacao: recomendacao(f, perda2027Anual),
       // Tipo do crédito destacado: "por dentro" = Simples recolhendo IBS/CBS no DAS (gTribSN, crédito limitado
       // ao pago no Simples); "por fora" = regime regular (gIBSCBS, crédito integral).
-      tipoCredito: saida || !(f.creditoDestacado > 0) ? null : f.regime === "sn_dentro" ? "por_dentro" : f.regime === "regular" || f.regime === "sn_regular" ? "por_fora" : null,
+      // Só pra fornecedor do SIMPLES que destacou no XML (regime normal sempre é "por fora" — não precisa dizer).
+      tipoCredito: saida || !(f.creditoDestacado > 0) ? null : f.regime === "sn_dentro" ? "por_dentro" : f.regime === "sn_regular" ? "por_fora" : null,
       // Simples sem regime informado e MEI: o crédito limitado ao DAS não vem na nota — fica como zero (advertência).
       advertencia2027: !saida && perda2027Anual > 0 && (f.regime === "sn_indefinido" || f.regime === "mei")
         ? (f.regime === "mei" ? "Estimativa: MEI não destaca IBS/CBS na nota; o crédito foi considerado zero." : "Estimativa: o fornecedor do Simples não informou o regime de IBS/CBS na nota; o crédito limitado ao valor pago no DAS não aparece e foi considerado zero — o valor real em jogo pode ser um pouco menor.")
