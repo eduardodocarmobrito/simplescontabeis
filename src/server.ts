@@ -14970,7 +14970,7 @@ async function onedriveExportarDocumentosNovos(escritorioId: number): Promise<{ 
              -- precisa dele). Detecta pelo tpEvento do XML (110111/110112 = cancelamento), porque esses
              -- eventos vêm da Distribuição DFe com evento_descricao NULL. Outros eventos (ex.: "Registro
              -- de Autorização de CT-e para a NF-e" tpEvento 610600, CC-e 110110, manifestação) ficam fora.
-             AND d.fonte != 'nf3e' AND (d.tipo != 'evento' OR d.xml LIKE '%<tpEvento>110111</tpEvento>%' OR d.xml LIKE '%<tpEvento>110112</tpEvento>%')
+             AND (d.tipo != 'evento' OR d.xml LIKE '%<tpEvento>110111</tpEvento>%' OR d.xml LIKE '%<tpEvento>110112</tpEvento>%')
            ORDER BY d.id ASC LIMIT 200`
         )
         .all(escritorioId, ultimoId) as any[];
@@ -15177,7 +15177,7 @@ async function gdriveExportarDocumentosNovos(escritorioId: number): Promise<{ no
                   e.nome as empresaNome, e.codigo_dominio as empresaCodigo, e.apelido as empresaApelido, e.cnpj as empresaCnpj
            FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
            WHERE d.escritorio_id = ? AND d.id > ?
-             AND d.fonte != 'nf3e' AND (d.tipo != 'evento' OR d.xml LIKE '%<tpEvento>110111</tpEvento>%' OR d.xml LIKE '%<tpEvento>110112</tpEvento>%')
+             AND (d.tipo != 'evento' OR d.xml LIKE '%<tpEvento>110111</tpEvento>%' OR d.xml LIKE '%<tpEvento>110112</tpEvento>%')
            ORDER BY d.id ASC LIMIT 200`
         )
         .all(escritorioId, ultimoId) as any[];
