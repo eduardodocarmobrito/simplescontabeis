@@ -13465,6 +13465,16 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
       referencia2027: ref27, aproveitavel2027: aprov27, perda2027, perda2027Anual: r2(perda2027 * (12 / meses)),
       fornecedores: fornecedores.length, fornecedoresComPendencia: fornecedores.filter((f) => f.status !== "conforme" || f.regime !== "regular").length,
       ncmsVencidos: ncms.filter((x) => x.status === "ncm_vencido").length,
+      // NF-e da mesma direção FORA do período escolhido (últimos 12 meses) — a tela avisa e oferece ampliar
+      // (achado 2026-11-25: "Mês atual" com 1 nota parecia que a auditoria não lia as notas da Busca de XML).
+      foraDoPeriodo: (() => {
+        const r = sqlite.prepare(
+          `SELECT COUNT(*) n, MIN(substr(d.data_emissao,1,10)) de, MAX(substr(d.data_emissao,1,10)) ate FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
+            WHERE d.escritorio_id = ? AND d.empresa_id = ? AND d.tipo IN ('nfe','nfce') AND ${saida ? "" : "NOT"} (${emitExpr})
+              AND substr(d.data_emissao,1,10) >= date('now','-12 months') AND (substr(d.data_emissao,1,10) < ? OR substr(d.data_emissao,1,10) > ?)`
+        ).get(escritorioId, empresaId, de, ate) as any;
+        return r?.n ? { notas: r.n, de: r.de, ate: r.ate } : null;
+      })(),
     },
     mixRegime: [...mixMap.values()].map((m) => ({ ...m, valor: r2(m.valor) })).sort((a, b) => b.valor - a.valor),
     mensal: [...mesMap.values()].sort((a, b) => a.mes.localeCompare(b.mes)).map((m) => ({ ...m, valor: r2(m.valor), valorConforme: r2(m.valorConforme), ibs: r2(m.ibs), cbs: r2(m.cbs) })),

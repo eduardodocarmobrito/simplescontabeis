@@ -11139,7 +11139,10 @@ async function reformaMontar(painel, urlApi, urlPdf, silencioso){
       ? `<div style="margin-top:8px; font-size:12.5px; color:var(--ink-soft);">Esta empresa emite NFS-e (prestadora de serviço) — por isso não há NF-e de saída dela. Esta auditoria hoje só cobre NF-e/NFC-e: o layout nacional de NFS-e ainda não traz os campos de IBS/CBS, então não há como auditar o destaque da reforma tributária nas notas de serviço ainda.</div>`
       : '';
     const avisoResumo = k.resumosSemItens>0 ? `<div style="margin-top:8px; font-size:12.5px; color:var(--ink-soft);">${rtNum(k.resumosSemItens)} nota(s) de ${direcaoReal} do período chegaram só como <b>resumo</b> (sem itens) e não dá pra auditar. A Sefaz não entrega o XML completo da nota emitida pela própria empresa — cadastre a empresa no Extrato NFE (Busca de XML › card Extrato NFE) que as notas completas substituem os resumos.</div>` : '';
-    painel.innerHTML = `<div class="card"><div class="empty-state">Nenhuma NF-e/CT-e de ${direcaoReal} no período para <b>${esc(d.empresa.nome)}</b>. As notas chegam pela Busca de XML (certificado da empresa configurado).${avisoResumo}${avisoNfse}</div></div>`;
+    const fpz = k.foraDoPeriodo;
+    const avisoFora = fpz ? `<div style="margin-top:10px;">ℹ️ Há <b>${rtNum(fpz.notas)}</b> NF-e de ${direcaoReal} desta empresa fora do período escolhido (de ${fmtDateIso(fpz.de)} a ${fmtDateIso(fpz.ate)}). <button class="btn small" id="rtAmpliarPeriodo">Incluir no período</button></div>` : '';
+    painel.innerHTML = `<div class="card"><div class="empty-state">Nenhuma NF-e/CT-e de ${direcaoReal} no período para <b>${esc(d.empresa.nome)}</b>. As notas chegam pela Busca de XML (certificado da empresa configurado).${avisoFora}${avisoResumo}${avisoNfse}</div></div>`;
+    const btnAmp = document.getElementById('rtAmpliarPeriodo'); if(btnAmp) btnAmp.addEventListener('click', ()=>rtAmpliarPeriodo(d));
     return;
   }
   // Análise precisa: enquanto houver consulta pendente na Calculadora oficial da RFB, NÃO mostra números
@@ -11400,6 +11403,24 @@ function rtAchadoHtml(a, comFornecedor){
     <div class="rt-ach-rec">➜ ${esc(a.recomendacao)}</div>
   </div>`;
 }
+// Amplia o período (Personalizado) para cobrir as notas que ficaram de fora do filtro.
+function rtAmpliarPeriodo(d){
+    const fp = d.kpis.foraDoPeriodo; if(!fp) return;
+    RT_PERIODO = 'custom';
+    RT_DE = fp.de < d.periodo.de ? fp.de : d.periodo.de;
+    RT_ATE = fp.ate > d.periodo.ate ? fp.ate : d.periodo.ate;
+    const combo = document.getElementById('rtPeriodoCombo');
+    if(combo){ combo.querySelector('.combo-value').value = 'custom'; combo.querySelector('.combo-input').value = 'Personalizado'; }
+    ['rtDeWrap','rtAteWrap'].forEach(id=>{ const el=document.getElementById(id); if(el) el.style.display=''; });
+    const br = iso=>iso.split('-').reverse().join('/');
+    const de = document.getElementById('rtDe'), ate = document.getElementById('rtAte');
+    if(de && ate){
+      de.value = RT_DE; ate.value = RT_ATE;
+      const dt = document.getElementById('rtDe_text'), at = document.getElementById('rtAte_text');
+      if(dt) dt.value = br(RT_DE); if(at) at.value = br(RT_ATE);
+      ate.dispatchEvent(new Event('change'));
+    }
+  }
 // Card "Notificação automática dos fornecedores" (entradas): status, ligar/desligar (Administrador), envios.
 async function rtNotifAutoCarregar(d){
   const box = document.getElementById('rtNotifAuto');
@@ -11442,25 +11463,8 @@ async function rtNotifAutoCarregar(d){
 }
 function rtLigarPainel(painel, d, urlPdf){
   rtNotifAutoCarregar(d);
-  // Amplia o período (Personalizado) para cobrir as notas que ficaram de fora.
   const ampliar = document.getElementById('rtAmpliarPeriodo');
-  if(ampliar) ampliar.addEventListener('click', ()=>{
-    const fp = d.kpis.foraDoPeriodo; if(!fp) return;
-    RT_PERIODO = 'custom';
-    RT_DE = fp.de < d.periodo.de ? fp.de : d.periodo.de;
-    RT_ATE = fp.ate > d.periodo.ate ? fp.ate : d.periodo.ate;
-    const combo = document.getElementById('rtPeriodoCombo');
-    if(combo){ combo.querySelector('.combo-value').value = 'custom'; combo.querySelector('.combo-input').value = 'Personalizado'; }
-    ['rtDeWrap','rtAteWrap'].forEach(id=>{ const el=document.getElementById(id); if(el) el.style.display=''; });
-    const br = iso=>iso.split('-').reverse().join('/');
-    const de = document.getElementById('rtDe'), ate = document.getElementById('rtAte');
-    if(de && ate){
-      de.value = RT_DE; ate.value = RT_ATE;
-      const dt = document.getElementById('rtDe_text'), at = document.getElementById('rtAte_text');
-      if(dt) dt.value = br(RT_DE); if(at) at.value = br(RT_ATE);
-      ate.dispatchEvent(new Event('change'));
-    }
-  });
+  if(ampliar) ampliar.addEventListener('click', ()=>rtAmpliarPeriodo(d));
   const renderForn = ()=>{
     const cont = {}; d.fornecedores.forEach(f=>{ cont[f.status] = (cont[f.status]||0)+1; });
     document.getElementById('rtFornChips').innerHTML = `<button class="rt-fchip ${RT_FORN_ST.size?'':'on'}" data-st="">Todas <b>${d.fornecedores.length}</b></button>` +
