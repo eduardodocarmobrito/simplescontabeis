@@ -10945,8 +10945,9 @@ async function radRfbMontar(empresaId, de, ate, skipAuto){
       <summary style="cursor:pointer; font-weight:600;">⚙️ Credenciais da Receita Federal (Receita Integra)</summary>
       <div style="font-size:12px; color:var(--ink-soft); margin:8px 0;">Cole as credenciais OAuth2 do Receita Integra/SERPRO (geradas no e-CAC). Não há ambiente de teste na RFB — a 1ª validação já é contra produção. A emissão plena do RAD começa em jan/2027.</div>
       <div class="row" style="gap:10px; flex-wrap:wrap;">
-        <div class="field grow" style="min-width:280px;"><label>URL do token OAuth2</label><input id="radTokenUrl" value="${esc(cfg.tokenUrl||'')}" ${podeEditar?'':'disabled'} placeholder="https://.../oauth2/token"></div>
-        <div class="field" style="width:180px;"><label>CNPJ matriz</label><input id="radCnpjMatriz" value="${esc(cfg.cnpjMatriz||'')}" ${podeEditar?'':'disabled'} placeholder="só números"></div>
+        <div class="field grow" style="min-width:260px;"><label>URL do token OAuth2</label><input id="radTokenUrl" value="${esc(cfg.tokenUrl||'')}" ${podeEditar?'':'disabled'} placeholder="https://h-api.receitafederal.gov.br/token"></div>
+        <div class="field" style="width:230px;"><label>Ambiente</label><select id="radAmbiente" ${podeEditar?'':'disabled'}><option value="restrita" ${cfg.ambiente==='restrita'?'selected':''}>Produção Restrita (testes)</option><option value="producao" ${cfg.ambiente==='producao'?'selected':''}>Produção</option></select></div>
+        <div class="field" style="width:170px;"><label>CNPJ matriz</label><input id="radCnpjMatriz" value="${esc(cfg.cnpjMatriz||'')}" ${podeEditar?'':'disabled'} placeholder="só números"></div>
       </div>
       <div class="row" style="gap:10px; flex-wrap:wrap;">
         <div class="field grow" style="min-width:240px;"><label>client_id</label><input id="radClientId" type="password" autocomplete="off" placeholder="${cfg.temClientId?'•••• preenchido — cole pra trocar':'client_id'}" ${podeEditar?'':'disabled'}></div>
@@ -10967,7 +10968,7 @@ async function radRfbMontar(empresaId, de, ate, skipAuto){
     ${acoes}
   </div>`;
   const salvarCfg = async ()=>{
-    const body = { tokenUrl: rv('radTokenUrl'), cnpjMatriz: rv('radCnpjMatriz'), ativo: document.getElementById('radAtivo').checked };
+    const body = { tokenUrl: rv('radTokenUrl'), cnpjMatriz: rv('radCnpjMatriz'), ambiente: (document.getElementById('radAmbiente')||{}).value||'producao', ativo: document.getElementById('radAtivo').checked };
     const ci = rv('radClientId'), cs = rv('radClientSecret'); if(ci) body.clientId=ci; if(cs) body.clientSecret=cs;
     await api('/rad/config', { method:'PUT', body });
   };

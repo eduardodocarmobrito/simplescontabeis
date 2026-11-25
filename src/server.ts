@@ -13498,10 +13498,11 @@ async function reformaCalcularValidado(escritorioId: number, empresaId: number, 
 sqlite.exec(`CREATE TABLE IF NOT EXISTS rad_rfb_config (
   escritorio_id INTEGER PRIMARY KEY REFERENCES escritorios(id),
   ativo INTEGER NOT NULL DEFAULT 0,
-  token_url TEXT, client_id_cifrado TEXT, client_secret_cifrado TEXT, cnpj_matriz TEXT,
+  token_url TEXT, client_id_cifrado TEXT, client_secret_cifrado TEXT, cnpj_matriz TEXT, ambiente TEXT DEFAULT 'producao',
   token_cache_cifrado TEXT, token_expira_em TEXT,
   ultima_validacao_em TEXT, ultima_validacao_ok INTEGER, ultimo_erro TEXT
 )`);
+try { sqlite.exec(`ALTER TABLE rad_rfb_config ADD COLUMN ambiente TEXT DEFAULT 'producao'`); } catch {}
 function getRadConfig(escritorioId: number): any { return sqlite.prepare(`SELECT * FROM rad_rfb_config WHERE escritorio_id = ?`).get(escritorioId); }
 async function radTokenValido(escritorioId: number): Promise<string> {
   const c = getRadConfig(escritorioId);
@@ -13518,7 +13519,7 @@ app.get("/api/rad/config", blockCliente, requirePermissao("reforma", "visualizar
   const c = getRadConfig((req as any).user.escritorioId);
   res.json({
     configurada: !!(c && c.token_url && c.client_id_cifrado && c.client_secret_cifrado), ativo: !!(c && c.ativo),
-    tokenUrl: c?.token_url || "", cnpjMatriz: c?.cnpj_matriz || "", temClientId: !!(c && c.client_id_cifrado), temClientSecret: !!(c && c.client_secret_cifrado),
+    tokenUrl: c?.token_url || "", cnpjMatriz: c?.cnpj_matriz || "", ambiente: c?.ambiente || "producao", temClientId: !!(c && c.client_id_cifrado), temClientSecret: !!(c && c.client_secret_cifrado),
     ultimaValidacaoEm: c?.ultima_validacao_em || null, ultimaValidacaoOk: c?.ultima_validacao_ok ?? null, ultimoErro: c?.ultimo_erro || null,
   });
 });
@@ -13528,6 +13529,7 @@ app.put("/api/rad/config", blockCliente, requirePermissao("reforma", "editar"), 
   const sets: string[] = [], vals: any[] = [];
   if (b.tokenUrl !== undefined) { sets.push("token_url = ?"); vals.push(String(b.tokenUrl || "").trim().slice(0, 500)); }
   if (b.cnpjMatriz !== undefined) { sets.push("cnpj_matriz = ?"); vals.push(String(b.cnpjMatriz || "").replace(/\D/g, "").slice(0, 14)); }
+  if (b.ambiente !== undefined) { sets.push("ambiente = ?"); vals.push(b.ambiente === "restrita" ? "restrita" : "producao"); }
   if (b.clientId) { sets.push("client_id_cifrado = ?"); vals.push(nfse.cifrarTexto(String(b.clientId).trim())); }
   if (b.clientSecret) { sets.push("client_secret_cifrado = ?"); vals.push(nfse.cifrarTexto(String(b.clientSecret).trim())); }
   if (b.ativo !== undefined) { sets.push("ativo = ?"); vals.push(b.ativo ? 1 : 0); }
@@ -13566,7 +13568,7 @@ app.post("/api/rad/gerar-darf", blockCliente, requirePermissao("reforma", "edita
     return { chaveDFE: String(i.chaveDFE).replace(/\D/g, ""), opcaoPagamento: parcial ? "PAGAMENTO_PARCIAL" : "PAGAMENTO_TOTAL", ...(parcial ? { valorDarfParcial: Number(i.valorDarfParcial) || 0 } : {}) } as radRfb.ItemDarf;
   }) : [];
   if (!itens.length) return res.status(400).json({ error: "Selecione ao menos uma nota (chave) para gerar o DARF." });
-  try { const token = await radTokenValido(user.escritorioId); res.json(await radRfb.gerarDarf(token, String(emp?.cnpj || ""), itens)); }
+  try { const cfg = getRadConfig(user.escritorioId); const token = await radTokenValido(user.escritorioId); res.json(await radRfb.gerarDarf(radRfb.baseUrl(cfg?.ambiente), token, String(emp?.cnpj || ""), itens)); }
   catch (e: any) { res.status(502).json({ error: e.message }); }
 });
 app.post("/api/rad/recolhimentos", blockCliente, requirePermissao("reforma", "visualizar"), async (req, res) => {
@@ -13574,8 +13576,8 @@ app.post("/api/rad/recolhimentos", blockCliente, requirePermissao("reforma", "vi
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   const emp = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
   try {
-    const token = await radTokenValido(user.escritorioId);
-    const sol = await radRfb.solicitarRecolhimentos(token, String(emp?.cnpj || ""), "");
+    const cfg = getRadConfig(user.escritorioId); const token = await radTokenValido(user.escritorioId);
+    const sol = await radRfb.solicitarRecolhimentos(radRfb.baseUrl(cfg?.ambiente), token, String(emp?.cnpj || ""), "");
     if (sol.httpStatus >= 400 || !sol.tiqueteSolicitacao) return res.status(502).json({ error: sol.mensagemErro || `Falha ao solicitar recolhimentos (HTTP ${sol.httpStatus}).` });
     res.json({ tiquete: sol.tiqueteSolicitacao, tEASegundos: sol.tEASegundos });
   } catch (e: any) { res.status(502).json({ error: e.message }); }
@@ -13583,10 +13585,11 @@ app.post("/api/rad/recolhimentos", blockCliente, requirePermissao("reforma", "vi
 app.get("/api/rad/recolhimentos/:tiquete", blockCliente, requirePermissao("reforma", "visualizar"), async (req, res) => {
   const user = (req as any).user;
   try {
+    const cfg = getRadConfig(user.escritorioId); const base = radRfb.baseUrl(cfg?.ambiente);
     const token = await radTokenValido(user.escritorioId);
-    const sit = await radRfb.consultarSituacao(token, String(req.params.tiquete));
+    const sit = await radRfb.consultarSituacao(base, token, String(req.params.tiquete));
     if (sit.situacao !== "CONCLUIDA") return res.json({ situacao: sit.situacao || "ERRO", erro: sit.mensagemErro || null });
-    const dl = await radRfb.obterDownloadUrl(token, String(req.params.tiquete));
+    const dl = await radRfb.obterDownloadUrl(base, token, String(req.params.tiquete));
     if (!dl.urlAssinada) return res.json({ situacao: "CONCLUIDA", erro: "Arquivo de retorno ainda indisponível." });
     res.json({ situacao: "CONCLUIDA", arquivo: await radRfb.baixarArquivo(dl.urlAssinada) });
   } catch (e: any) { res.status(502).json({ error: e.message }); }

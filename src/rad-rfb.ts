@@ -3,7 +3,10 @@
 // Só há ambiente de PRODUÇÃO (sem sandbox); emissão plena do RAD a partir de jan/2027. As credenciais
 // (URL do token + client_id/secret) vêm do Receita Integra/SERPRO e são configuradas POR ESCRITÓRIO,
 // cifradas no banco. Este módulo NÃO foi testado contra a API real (depende das credenciais do titular).
-const BASE = "https://api.receitafederal.gov.br/apuracao-cbs/v2";
+// Base da API por ambiente: produção (api.) ou produção restrita/testes (h-api.).
+export function baseUrl(ambiente?: string): string {
+  return (ambiente === "restrita" ? "https://h-api.receitafederal.gov.br" : "https://api.receitafederal.gov.br") + "/apuracao-cbs/v2";
+}
 const soDig = (s: string) => String(s || "").replace(/\D/g, "");
 // Os endpoints usam a RAIZ do CNPJ (8 dígitos) do estabelecimento matriz. A doc do /rad é inconsistente
 // (cita 14 em um ponto e usa 8 no exemplo); usamos 8 (raiz), conforme o exemplo oficial de /recolhimentos.
@@ -33,8 +36,8 @@ export async function obterToken(tokenUrl: string, clientId: string, clientSecre
 
 export interface ItemDarf { chaveDFE: string; opcaoPagamento: "PAGAMENTO_TOTAL" | "PAGAMENTO_PARCIAL"; valorDarfParcial?: number }
 // Gera o DARF da CBS paga como adquirente (síncrono). Body = array (uma entrada por DF-e).
-export async function gerarDarf(accessToken: string, cnpj: string, itens: ItemDarf[]): Promise<any> {
-  const res = await fetch(`${BASE}/rad/${cnpjRaiz(cnpj)}`, {
+export async function gerarDarf(base: string, accessToken: string, cnpj: string, itens: ItemDarf[]): Promise<any> {
+  const res = await fetch(`${base}/rad/${cnpjRaiz(cnpj)}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(itens),
@@ -43,20 +46,20 @@ export async function gerarDarf(accessToken: string, cnpj: string, itens: ItemDa
 }
 
 // Solicita a consulta assíncrona dos recolhimentos (RAD) — retorna tiqueteSolicitacao.
-export async function solicitarRecolhimentos(accessToken: string, cnpj: string, urlRetorno = ""): Promise<any> {
-  const res = await fetch(`${BASE}/recolhimentos/${cnpjRaiz(cnpj)}`, {
+export async function solicitarRecolhimentos(base: string, accessToken: string, cnpj: string, urlRetorno = ""): Promise<any> {
+  const res = await fetch(`${base}/recolhimentos/${cnpjRaiz(cnpj)}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ urlRetorno }),
   });
   return lerJson(res, "mensagemErro");
 }
-export async function consultarSituacao(accessToken: string, tiquete: string): Promise<any> {
-  const res = await fetch(`${BASE}/situacao/${encodeURIComponent(tiquete)}`, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
+export async function consultarSituacao(base: string, accessToken: string, tiquete: string): Promise<any> {
+  const res = await fetch(`${base}/situacao/${encodeURIComponent(tiquete)}`, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
   return lerJson(res, "mensagemErro");
 }
-export async function obterDownloadUrl(accessToken: string, tiquete: string): Promise<any> {
-  const res = await fetch(`${BASE}/download/${encodeURIComponent(tiquete)}`, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
+export async function obterDownloadUrl(base: string, accessToken: string, tiquete: string): Promise<any> {
+  const res = await fetch(`${base}/download/${encodeURIComponent(tiquete)}`, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
   return lerJson(res, "mensagemErro");
 }
 // A urlAssinada é consumida por GET SEM Bearer e sem headers extras.
