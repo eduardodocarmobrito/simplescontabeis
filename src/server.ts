@@ -13409,6 +13409,13 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
       notas: f.notas, itens: f.itens, valor: r2(f.valor), pctComGrupo: f.notas ? Math.round((f.notasComGrupo / f.notas) * 100) : 0,
       alta: f.alta, media: f.media, baixa: f.baixa, score, status: score >= 90 && !f.alta ? "conforme" : score >= 70 ? "atencao" : "critico",
       creditoDestacado: r2(f.creditoDestacado), risco: r2(f.risco), perda2027Anual, regras: [...f.regras], recomendacao: recomendacao(f, perda2027Anual),
+      // Tipo do crédito destacado: "por dentro" = Simples recolhendo IBS/CBS no DAS (gTribSN, crédito limitado
+      // ao pago no Simples); "por fora" = regime regular (gIBSCBS, crédito integral).
+      tipoCredito: saida || !(f.creditoDestacado > 0) ? null : f.regime === "sn_dentro" ? "por_dentro" : f.regime === "regular" || f.regime === "sn_regular" ? "por_fora" : null,
+      // Simples sem regime informado e MEI: o crédito limitado ao DAS não vem na nota — fica como zero (advertência).
+      advertencia2027: !saida && perda2027Anual > 0 && (f.regime === "sn_indefinido" || f.regime === "mei")
+        ? (f.regime === "mei" ? "Estimativa: MEI não destaca IBS/CBS na nota; o crédito foi considerado zero." : "Estimativa: o fornecedor do Simples não informou o regime de IBS/CBS na nota; o crédito limitado ao valor pago no DAS não aparece e foi considerado zero — o valor real em jogo pode ser um pouco menor.")
+        : null,
       memoria2027: saida ? null : {
         meses, de, ate: fimEfetivo, cbs: reformaAuditoria.CBS_2027_ESTIMADA,
         linhas: [...f.memoria.values()].map((m: any) => ({ situacao: m.situacao, reducao: m.reducao, aliq: Math.round(m.aliq * 10000) / 10000, itens: m.itens, base: r2(m.base), ref: r2(m.ref), aprov: r2(m.aprov), perda: r2(Math.max(0, m.ref - m.aprov)) }))

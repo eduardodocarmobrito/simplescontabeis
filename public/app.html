@@ -11170,8 +11170,8 @@ function rtFornTabelaHtml(forn){
       <td>${rtRegimeChip(f.regime, f.regimeLabel)}</td>
       <td class="num">${rtNum(f.notas)}</td><td class="num">${rtBRL(f.valor)}</td><td class="num">${f.pctComGrupo}%</td>
       <td style="white-space:nowrap;">${f.alta?`<span style="color:#d03b3b;">⛔ ${f.alta}</span> `:''}${f.media?`<span style="color:#ec835a;">⚠ ${f.media}</span> `:''}${f.baixa?`<span class="rt-mut">• ${f.baixa}</span>`:''}${!f.alta&&!f.media&&!f.baixa?'<span style="color:#0ca30c;">✔</span>':''}</td>
-      <td class="num">${rtBRL(f.creditoDestacado)}${f.risco?`<div style="color:#d03b3b; font-size:11px;">⛔ ${rtBRL(f.risco)} em risco</div>`:''}</td>
-      ${S?'':`<td class="num">${f.perda2027Anual?`<b title="${esc('Memória de cálculo'+String.fromCharCode(10)+(f.memoriaTexto||[]).join(String.fromCharCode(10)))}" style="cursor:help; border-bottom:1px dotted currentColor;">${rtBRL(f.perda2027Anual)}</b>`:'—'}</td>`}
+      <td class="num">${rtBRL(f.creditoDestacado)}${f.tipoCredito?`<div class="rt-mut" style="font-size:11px; white-space:nowrap;" title="${f.tipoCredito==='por_dentro'?'Simples Nacional recolhendo IBS/CBS dentro do DAS: o crédito fica limitado ao valor pago no Simples':'Regime regular: IBS/CBS destacado por fora, crédito integral'}">${f.tipoCredito==='por_dentro'?'por dentro (DAS)':'por fora (regime regular)'}</div>`:''}${f.risco?`<div style="color:#d03b3b; font-size:11px;">⛔ ${rtBRL(f.risco)} em risco</div>`:''}</td>
+      ${S?'':`<td class="num">${f.perda2027Anual?`<b title="${esc('Memória de cálculo'+String.fromCharCode(10)+(f.memoriaTexto||[]).join(String.fromCharCode(10)))}" style="cursor:help; border-bottom:1px dotted currentColor;">${rtBRL(f.perda2027Anual)}</b>${f.advertencia2027?` <span title="${esc(f.advertencia2027)}" style="cursor:help; color:#ec835a;">⚠</span>`:''}`:'—'}</td>`}
       <td style="white-space:nowrap;"><b>${f.score}</b> ${rtChip(RT_STATUS[f.status])}</td>
     </tr>`).join('')}</tbody></table>`;
 }
