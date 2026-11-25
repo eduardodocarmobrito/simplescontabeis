@@ -36,6 +36,7 @@ import * as ofx from "./ofx";
 import * as openFinance from "./open-finance";
 import * as onedrive from "./onedrive";
 import * as gdrive from "./gdrive";
+import * as radRfb from "./rad-rfb";
 import * as integracontador from "./integracontador";
 import * as ocr from "./ocr";
 import { buscarViaOnvio } from "./onvio-sync";
@@ -13491,6 +13492,105 @@ async function reformaCalcularValidado(escritorioId: number, empresaId: number, 
   }
   return d;
 }
+// ---------- RAD (Recolhimento pelo Adquirente) — integração com a API de Apuração da CBS da RFB ----------
+// Credenciais do Receita Integra/SERPRO configuradas por escritório (cifradas). Sem sandbox na RFB;
+// emissão plena do RAD a partir de jan/2027. Ver src/rad-rfb.ts.
+sqlite.exec(`CREATE TABLE IF NOT EXISTS rad_rfb_config (
+  escritorio_id INTEGER PRIMARY KEY REFERENCES escritorios(id),
+  ativo INTEGER NOT NULL DEFAULT 0,
+  token_url TEXT, client_id_cifrado TEXT, client_secret_cifrado TEXT, cnpj_matriz TEXT,
+  token_cache_cifrado TEXT, token_expira_em TEXT,
+  ultima_validacao_em TEXT, ultima_validacao_ok INTEGER, ultimo_erro TEXT
+)`);
+function getRadConfig(escritorioId: number): any { return sqlite.prepare(`SELECT * FROM rad_rfb_config WHERE escritorio_id = ?`).get(escritorioId); }
+async function radTokenValido(escritorioId: number): Promise<string> {
+  const c = getRadConfig(escritorioId);
+  if (!c || !c.ativo) throw new Error("Integração RAD não está ativa — configure e ative em Reforma Tributária › RAD.");
+  if (!c.token_url || !c.client_id_cifrado || !c.client_secret_cifrado) throw new Error("Credenciais do RAD incompletas (URL do token, client_id e client_secret).");
+  if (c.token_cache_cifrado && c.token_expira_em && new Date(c.token_expira_em) > new Date()) {
+    try { return nfse.decifrarTexto(c.token_cache_cifrado); } catch {}
+  }
+  const t = await radRfb.obterToken(c.token_url, nfse.decifrarTexto(c.client_id_cifrado), nfse.decifrarTexto(c.client_secret_cifrado));
+  sqlite.prepare(`UPDATE rad_rfb_config SET token_cache_cifrado = ?, token_expira_em = ? WHERE escritorio_id = ?`).run(nfse.cifrarTexto(t.accessToken), t.expiraEm, escritorioId);
+  return t.accessToken;
+}
+app.get("/api/rad/config", blockCliente, requirePermissao("reforma", "visualizar"), (req, res) => {
+  const c = getRadConfig((req as any).user.escritorioId);
+  res.json({
+    configurada: !!(c && c.token_url && c.client_id_cifrado && c.client_secret_cifrado), ativo: !!(c && c.ativo),
+    tokenUrl: c?.token_url || "", cnpjMatriz: c?.cnpj_matriz || "", temClientId: !!(c && c.client_id_cifrado), temClientSecret: !!(c && c.client_secret_cifrado),
+    ultimaValidacaoEm: c?.ultima_validacao_em || null, ultimaValidacaoOk: c?.ultima_validacao_ok ?? null, ultimoErro: c?.ultimo_erro || null,
+  });
+});
+app.put("/api/rad/config", blockCliente, requirePermissao("reforma", "editar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId; const b = req.body || {};
+  sqlite.prepare(`INSERT OR IGNORE INTO rad_rfb_config (escritorio_id) VALUES (?)`).run(escritorioId);
+  const sets: string[] = [], vals: any[] = [];
+  if (b.tokenUrl !== undefined) { sets.push("token_url = ?"); vals.push(String(b.tokenUrl || "").trim().slice(0, 500)); }
+  if (b.cnpjMatriz !== undefined) { sets.push("cnpj_matriz = ?"); vals.push(String(b.cnpjMatriz || "").replace(/\D/g, "").slice(0, 14)); }
+  if (b.clientId) { sets.push("client_id_cifrado = ?"); vals.push(nfse.cifrarTexto(String(b.clientId).trim())); }
+  if (b.clientSecret) { sets.push("client_secret_cifrado = ?"); vals.push(nfse.cifrarTexto(String(b.clientSecret).trim())); }
+  if (b.ativo !== undefined) { sets.push("ativo = ?"); vals.push(b.ativo ? 1 : 0); }
+  sets.push("token_cache_cifrado = NULL", "token_expira_em = NULL"); // trocar credencial/config invalida o token em cache
+  vals.push(escritorioId); sqlite.prepare(`UPDATE rad_rfb_config SET ${sets.join(", ")} WHERE escritorio_id = ?`).run(...vals);
+  res.json({ ok: true });
+});
+app.post("/api/rad/validar", blockCliente, requirePermissao("reforma", "editar"), async (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  try {
+    await radTokenValido(escritorioId);
+    sqlite.prepare(`UPDATE rad_rfb_config SET ultima_validacao_em = datetime('now'), ultima_validacao_ok = 1, ultimo_erro = NULL WHERE escritorio_id = ?`).run(escritorioId);
+    res.json({ ok: true, mensagem: "Conexão com a Receita Federal (RAD) validada — token OAuth2 obtido." });
+  } catch (e: any) {
+    sqlite.prepare(`UPDATE rad_rfb_config SET ultima_validacao_em = datetime('now'), ultima_validacao_ok = 0, ultimo_erro = ? WHERE escritorio_id = ?`).run(String(e.message).slice(0, 500), escritorioId);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+app.get("/api/rad/notas", blockCliente, requirePermissao("reforma", "visualizar"), (req, res) => {
+  const user = (req as any).user; const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const de = String(req.query.de || ""), ate = String(req.query.ate || "");
+  const emp = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const cnpjEmp = String(emp?.cnpj || "").replace(/\D/g, "");
+  const rows = sqlite.prepare(`SELECT chave_acesso, emitente_nome, emitente_cnpj, valor_total, data_emissao FROM nfe_documentos WHERE empresa_id = ? AND tipo = 'nfe' AND chave_acesso IS NOT NULL AND chave_acesso <> '' AND (? = '' OR substr(data_emissao,1,10) >= ?) AND (? = '' OR substr(data_emissao,1,10) <= ?) ORDER BY data_emissao DESC`).all(empresaId, de, de, ate, ate) as any[];
+  const notas = rows.filter((r) => String(r.emitente_cnpj || "").replace(/\D/g, "") !== cnpjEmp).slice(0, 500)
+    .map((r) => ({ chave: r.chave_acesso, fornecedor: r.emitente_nome, fornecedorCnpj: r.emitente_cnpj, valor: r.valor_total, data: r.data_emissao }));
+  res.json({ cnpjMatriz: cnpjEmp.slice(0, 8), items: notas });
+});
+app.post("/api/rad/gerar-darf", blockCliente, requirePermissao("reforma", "editar"), async (req, res) => {
+  const user = (req as any).user; const b = req.body || {}; const empresaId = Number(b.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const emp = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const itens = Array.isArray(b.itens) ? b.itens.filter((i: any) => i && i.chaveDFE).map((i: any) => {
+    const parcial = i.opcaoPagamento === "PAGAMENTO_PARCIAL";
+    return { chaveDFE: String(i.chaveDFE).replace(/\D/g, ""), opcaoPagamento: parcial ? "PAGAMENTO_PARCIAL" : "PAGAMENTO_TOTAL", ...(parcial ? { valorDarfParcial: Number(i.valorDarfParcial) || 0 } : {}) } as radRfb.ItemDarf;
+  }) : [];
+  if (!itens.length) return res.status(400).json({ error: "Selecione ao menos uma nota (chave) para gerar o DARF." });
+  try { const token = await radTokenValido(user.escritorioId); res.json(await radRfb.gerarDarf(token, String(emp?.cnpj || ""), itens)); }
+  catch (e: any) { res.status(502).json({ error: e.message }); }
+});
+app.post("/api/rad/recolhimentos", blockCliente, requirePermissao("reforma", "visualizar"), async (req, res) => {
+  const user = (req as any).user; const empresaId = Number(req.body?.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const emp = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
+  try {
+    const token = await radTokenValido(user.escritorioId);
+    const sol = await radRfb.solicitarRecolhimentos(token, String(emp?.cnpj || ""), "");
+    if (sol.httpStatus >= 400 || !sol.tiqueteSolicitacao) return res.status(502).json({ error: sol.mensagemErro || `Falha ao solicitar recolhimentos (HTTP ${sol.httpStatus}).` });
+    res.json({ tiquete: sol.tiqueteSolicitacao, tEASegundos: sol.tEASegundos });
+  } catch (e: any) { res.status(502).json({ error: e.message }); }
+});
+app.get("/api/rad/recolhimentos/:tiquete", blockCliente, requirePermissao("reforma", "visualizar"), async (req, res) => {
+  const user = (req as any).user;
+  try {
+    const token = await radTokenValido(user.escritorioId);
+    const sit = await radRfb.consultarSituacao(token, String(req.params.tiquete));
+    if (sit.situacao !== "CONCLUIDA") return res.json({ situacao: sit.situacao || "ERRO", erro: sit.mensagemErro || null });
+    const dl = await radRfb.obterDownloadUrl(token, String(req.params.tiquete));
+    if (!dl.urlAssinada) return res.json({ situacao: "CONCLUIDA", erro: "Arquivo de retorno ainda indisponível." });
+    res.json({ situacao: "CONCLUIDA", arquivo: await radRfb.baixarArquivo(dl.urlAssinada) });
+  } catch (e: any) { res.status(502).json({ error: e.message }); }
+});
 app.get("/api/reforma/auditoria", blockCliente, requirePermissao("reforma", "visualizar"), requireModuloEscritorioVendido("reforma"), async (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.query.empresaId);

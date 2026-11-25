@@ -10882,11 +10882,15 @@ async function reformaRadMontar(painel, urlApi){
   catch(e){ if(seq===RT_SEQ) painel.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
   if(seq!==RT_SEQ || STATE.page!==paginaAtual) return;
   const k = d.kpis || {};
+  const qp = new URLSearchParams((urlApi.split('?')[1]||''));
+  const radEmpresaId = Number(qp.get('empresaId')) || RT_EMPRESA_ID || null;
+  const radDe = qp.get('de')||'', radAte = qp.get('ate')||'';
   const intro = `<div class="card" style="border-left:4px solid #c9a227;">
     <div style="font-size:13.5px; line-height:1.55;"><b>🧾 RAD — Recolhimento pelo Adquirente.</b> Mecanismo da CBS (API da Receita Federal, nov/2026) em que o <b>adquirente</b> recolhe a CBS das próprias compras, quita o débito do fornecedor e <b>garante o direito ao crédito</b>. Esta aba monitora, pelas notas de entrada, os créditos em risco por falha do fornecedor — as compras em que vale usar o RAD para não perder o crédito.</div>
-  </div>`;
+  </div><div id="radRfbBox" style="margin-bottom:14px;"></div>`;
   if(!k.notas){
     painel.innerHTML = intro + `<div class="card"><div class="empty-state">Nenhuma nota de entrada no período para <b>${esc(d.empresa?.nome||'')}</b>. As notas chegam pela Busca de XML.</div></div>`;
+    radRfbMontar(radEmpresaId, radDe, radAte);
     return;
   }
   if(d.validacao && d.validacao.pendentes>0 && !d.validacao.erroApi && (painel._radTent||0) < 80){
@@ -10922,8 +10926,134 @@ async function reformaRadMontar(painel, urlApi){
           <td style="text-align:right; white-space:nowrap;">${f.perda2027Anual?rtBRL(f.perda2027Anual):'—'}</td>
         </tr>`).join('')}</tbody>
       </table>` : `<div class="empty-state" style="color:#0ca30c;">✔ Nenhum crédito em risco no período — o destaque de IBS/CBS das compras está consistente.</div>`}
-      <div class="rt-mut" style="font-size:11.5px; margin-top:10px;">A emissão do documento de arrecadação do RAD pela API oficial da Receita Federal (disponibilizada em 17/11/2026) será integrada aqui em etapa seguinte. Por ora, esta aba <b>monitora</b> os créditos elegíveis.</div>
+      <div class="rt-mut" style="font-size:11.5px; margin-top:10px;">A emissão do DARF do RAD é feita pela integração oficial com a Receita Federal (painel acima) — depende das credenciais do Receita Integra do escritório. Emissão plena do RAD a partir de jan/2027.</div>
     </div>`;
+  radRfbMontar(radEmpresaId, radDe, radAte);
+}
+// Painel de configuração + emissão do RAD via API da RFB (só escritório). Valida a conexão ao entrar.
+async function radRfbMontar(empresaId, de, ate, skipAuto){
+  const box = document.getElementById('radRfbBox'); if(!box) return;
+  if(STATE.user.perfil==='Cliente'){ box.innerHTML=''; return; }
+  const podeEditar = STATE.user.perfil==='Administrador' || can('reforma','editar');
+  let cfg; try{ cfg = await api('/rad/config'); }catch(e){ box.innerHTML=''; return; }
+  const rv = id => { const el=document.getElementById(id); return el?el.value.trim():''; };
+  const statusHtml = cfg.ultimaValidacaoEm
+    ? `<span class="tag ${cfg.ultimaValidacaoOk?'ok':'bad'}">${cfg.ultimaValidacaoOk?'Conectado':'Falha'}</span> <span style="font-size:11.5px; color:var(--ink-soft);">checado ${fmtDateHora(cfg.ultimaValidacaoEm)}${!cfg.ultimaValidacaoOk&&cfg.ultimoErro?' · '+esc(cfg.ultimoErro):''}</span>`
+    : (cfg.configurada?'<span class="tag muted">Ainda não validado</span>':'<span class="tag warn">Não configurado</span>');
+  const configForm = `
+    <details class="rt-reg-det" ${cfg.configurada?'':'open'} style="margin-top:8px;">
+      <summary style="cursor:pointer; font-weight:600;">⚙️ Credenciais da Receita Federal (Receita Integra)</summary>
+      <div style="font-size:12px; color:var(--ink-soft); margin:8px 0;">Cole as credenciais OAuth2 do Receita Integra/SERPRO (geradas no e-CAC). Não há ambiente de teste na RFB — a 1ª validação já é contra produção. A emissão plena do RAD começa em jan/2027.</div>
+      <div class="row" style="gap:10px; flex-wrap:wrap;">
+        <div class="field grow" style="min-width:280px;"><label>URL do token OAuth2</label><input id="radTokenUrl" value="${esc(cfg.tokenUrl||'')}" ${podeEditar?'':'disabled'} placeholder="https://.../oauth2/token"></div>
+        <div class="field" style="width:180px;"><label>CNPJ matriz</label><input id="radCnpjMatriz" value="${esc(cfg.cnpjMatriz||'')}" ${podeEditar?'':'disabled'} placeholder="só números"></div>
+      </div>
+      <div class="row" style="gap:10px; flex-wrap:wrap;">
+        <div class="field grow" style="min-width:240px;"><label>client_id</label><input id="radClientId" type="password" autocomplete="off" placeholder="${cfg.temClientId?'•••• preenchido — cole pra trocar':'client_id'}" ${podeEditar?'':'disabled'}></div>
+        <div class="field grow" style="min-width:240px;"><label>client_secret</label><input id="radClientSecret" type="password" autocomplete="off" placeholder="${cfg.temClientSecret?'•••• preenchido — cole pra trocar':'client_secret'}" ${podeEditar?'':'disabled'}></div>
+      </div>
+      <label class="checkbox-row" style="margin:4px 0;"><input type="checkbox" id="radAtivo" ${cfg.ativo?'checked':''} ${podeEditar?'':'disabled'}> Ativar a integração RAD</label>
+      ${podeEditar?`<div class="row" style="gap:8px; margin-top:6px;"><button class="btn primary" id="radSalvar">Salvar</button><button class="btn" id="radValidar">Validar conexão</button><span id="radCfgMsg" style="font-size:12px; color:var(--ink-soft);"></span></div>`:''}
+    </details>`;
+  const acoes = cfg.configurada && cfg.ativo ? `
+    <div class="row" style="gap:8px; margin-top:10px; flex-wrap:wrap;">
+      <button class="btn primary" id="radGerarDarf" ${empresaId?'':'disabled'}>🧾 Gerar DARF (RAD)</button>
+      <button class="btn" id="radConsultar" ${empresaId?'':'disabled'}>📥 Consultar recolhimentos</button>
+    </div>
+    <div id="radResultado" style="margin-top:10px;"></div>` : '';
+  box.innerHTML = `<div class="card">
+    <div><b>🔗 Integração RAD · Receita Federal</b> ${statusHtml}</div>
+    ${configForm}
+    ${acoes}
+  </div>`;
+  const salvarCfg = async ()=>{
+    const body = { tokenUrl: rv('radTokenUrl'), cnpjMatriz: rv('radCnpjMatriz'), ativo: document.getElementById('radAtivo').checked };
+    const ci = rv('radClientId'), cs = rv('radClientSecret'); if(ci) body.clientId=ci; if(cs) body.clientSecret=cs;
+    await api('/rad/config', { method:'PUT', body });
+  };
+  document.getElementById('radSalvar')?.addEventListener('click', async ()=>{
+    const msg=document.getElementById('radCfgMsg');
+    try{ await salvarCfg(); toast('Configuração salva.','ok'); radRfbMontar(empresaId, de, ate, true); }catch(e){ if(msg)msg.textContent=''; toast(e.message,'err'); }
+  });
+  document.getElementById('radValidar')?.addEventListener('click', async (ev)=>{
+    const b=ev.currentTarget, msg=document.getElementById('radCfgMsg'); b.disabled=true; if(msg)msg.textContent='Validando…';
+    try{ await salvarCfg(); const r=await api('/rad/validar', { method:'POST' }); toast(r.mensagem||'Conectado.','ok'); }
+    catch(e){ toast(e.message,'err'); }
+    radRfbMontar(empresaId, de, ate, true);
+  });
+  document.getElementById('radGerarDarf')?.addEventListener('click', ()=>radGerarDarfModal(empresaId, de, ate));
+  document.getElementById('radConsultar')?.addEventListener('click', (ev)=>radConsultarRecolhimentos(empresaId, ev.currentTarget));
+  // Validação automática ao ENTRAR na aba (uma vez por abertura; skipAuto evita loop no re-render).
+  if(!skipAuto && cfg.configurada && cfg.ativo && podeEditar){
+    api('/rad/validar', { method:'POST' }).then(()=>radRfbMontar(empresaId,de,ate,true)).catch(()=>radRfbMontar(empresaId,de,ate,true));
+  }
+}
+async function radGerarDarfModal(empresaId, de, ate){
+  if(!empresaId){ toast('Escolha uma empresa.','err'); return; }
+  let r; try{ r = await api(`/rad/notas?empresaId=${empresaId}&de=${de}&ate=${ate}`); }catch(e){ toast(e.message,'err'); return; }
+  if(!r.items.length){ toast('Nenhuma nota de entrada com chave no período.','err'); return; }
+  const linhas = r.items.slice(0,300).map(n=>`<tr>
+    <td><input type="checkbox" class="radChk" data-chave="${esc(n.chave)}"></td>
+    <td><b>${esc(n.fornecedor||'—')}</b><div class="rt-mut" style="font-size:11px;">${esc(fmtCnpjCpf(n.fornecedorCnpj||''))} · ${esc((n.data||'').slice(0,10))}</div><div style="font-size:10px; color:var(--ink-soft); word-break:break-all;">${esc(n.chave)}</div></td>
+    <td style="text-align:right; white-space:nowrap;">${rtBRL(n.valor||0)}</td></tr>`).join('');
+  openModal(`<h3>Gerar DARF do RAD</h3>
+    <div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:8px;">Selecione as notas de compra (DF-e) cujo CBS você quer recolher como adquirente (pagamento total). A emissão é feita direto na Receita Federal.</div>
+    <div style="max-height:320px; overflow:auto; border:1px solid var(--rule); border-radius:8px;"><table class="data-table"><thead><tr><th style="width:36px;"></th><th>Nota / fornecedor</th><th style="text-align:right;">Valor</th></tr></thead><tbody>${linhas}</tbody></table></div>
+    <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="radDarfGerar">Gerar DARF</button></div>
+    <div id="radDarfOut" style="margin-top:10px;"></div>`);
+  document.getElementById('radDarfGerar').addEventListener('click', async (ev)=>{
+    const b=ev.currentTarget; const chks=[...document.querySelectorAll('.radChk:checked')];
+    if(!chks.length){ toast('Marque ao menos uma nota.','err'); return; }
+    const itens = chks.map(c=>({ chaveDFE: c.dataset.chave, opcaoPagamento:'PAGAMENTO_TOTAL' }));
+    b.disabled=true; b.textContent='Gerando…';
+    const out = document.getElementById('radDarfOut');
+    try{
+      const res = await api('/rad/gerar-darf', { method:'POST', body:{ empresaId, itens } });
+      if(res.cdRetorno==='DARF_GERADO' && res.darf){
+        const ip = res.informacoesPagamento||{};
+        out.innerHTML = `<div class="tag ok">DARF gerado</div>
+          <div style="margin-top:6px; font-size:13px;">Valor: <b>${rtBRL(ip.valorDarfTotal||0)}</b> · vencimento ${esc(ip.dataMaximaPagamento||'—')}</div>
+          ${res.darf.linkDarfPDF?`<div style="margin-top:6px;"><a class="btn small" href="${esc(res.darf.linkDarfPDF)}" target="_blank" rel="noopener">⬇ Baixar DARF (PDF)</a></div>`:''}
+          ${res.darf.codigoBarras?`<div style="margin-top:6px; font-size:11px; word-break:break-all;"><b>Código de barras:</b> ${esc(res.darf.codigoBarras)}</div>`:''}
+          ${res.darf.chavePIX?`<div style="margin-top:4px; font-size:11px; word-break:break-all;"><b>PIX:</b> ${esc(res.darf.chavePIX)}</div>`:''}`;
+      } else {
+        out.innerHTML = `<div class="tag bad">${esc(res.cdRetorno||'Erro')}</div> <span style="font-size:12.5px;">${esc(res.mensagem||res.error||'Não foi possível gerar o DARF.')}</span>${res.dadosInvalidos?`<div style="font-size:11.5px; color:var(--debit);">Dados inválidos: ${esc((res.dadosInvalidos||[]).join(', '))}</div>`:''}`;
+      }
+    }catch(e){ out.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`; }
+    finally{ b.disabled=false; b.textContent='Gerar DARF'; }
+  });
+}
+async function radConsultarRecolhimentos(empresaId, btn){
+  if(!empresaId) return;
+  const out = document.getElementById('radResultado'); const t0=btn.textContent; btn.disabled=true; btn.textContent='Solicitando…';
+  out.innerHTML = `<div class="empty-state">Solicitando os recolhimentos à Receita Federal…</div>`;
+  try{
+    const r = await api('/rad/recolhimentos', { method:'POST', body:{ empresaId } });
+    if(!r.tiquete){ out.innerHTML = `<div class="tag bad">Erro</div> <span>${esc(r.error||'Sem tíquete.')}</span>`; return; }
+    let tent=0;
+    const poll = async ()=>{
+      tent++;
+      try{
+        const s = await api('/rad/recolhimentos/'+encodeURIComponent(r.tiquete));
+        if(s.situacao==='CONCLUIDA' && s.arquivo){ out.innerHTML = radRecolhimentosHtml(s.arquivo); return; }
+        if(s.situacao==='CONCLUIDA' && s.erro){ out.innerHTML = `<div class="empty-state">${esc(s.erro)}</div>`; return; }
+        if(s.situacao==='ERRO' || s.situacao==='EXPIRADA'){ out.innerHTML = `<div class="tag bad">${esc(s.situacao)}</div> <span>${esc(s.erro||'')}</span>`; return; }
+        if(tent<20){ out.innerHTML = `<div class="empty-state">⏳ ${esc(s.situacao||'PENDENTE')} — aguardando a RFB (consulta ${tent})…</div>`; setTimeout(poll, 6000); }
+        else out.innerHTML = `<div class="empty-state">Ainda processando na RFB. Tente "Consultar recolhimentos" de novo em alguns minutos.</div>`;
+      }catch(e){ out.innerHTML = `<div class="tag bad">Falhou</div> <span>${esc(e.message)}</span>`; }
+    };
+    out.innerHTML = `<div class="empty-state">⏳ Consulta em processamento na RFB (tíquete ${esc(String(r.tiquete).slice(0,12))}…)…</div>`;
+    setTimeout(poll, 4000);
+  }catch(e){ out.innerHTML = `<div class="tag bad">Falhou</div> <span>${esc(e.message)}</span>`; }
+  finally{ btn.disabled=false; btn.textContent=t0; }
+}
+function radRecolhimentosHtml(arq){
+  const aps = (arq && arq.apuracao) || [];
+  const linhas = aps.flatMap(a=>(a.pagamentos||[]).flatMap(p=>(p.composicao||[]).map(c=>`<tr>
+    <td>${esc(c.pa||'')}</td><td>${esc(fmtCnpjCpf(c.niFornecedor||''))}</td><td>${esc(p.numeroDARF||'')}</td>
+    <td style="text-align:right;">${rtBRL(c.total||0)}</td></tr>`))).join('');
+  if(!linhas) return `<div class="empty-state" style="color:#0ca30c;">✔ Nenhum recolhimento (RAD) no período consultado.</div>`;
+  return `<div class="tag ok">Recolhimentos (RAD)</div><table class="data-table" style="margin-top:6px;"><thead><tr><th>Período</th><th>Fornecedor</th><th>DARF</th><th style="text-align:right;">Total</th></tr></thead><tbody>${linhas}</tbody></table>`;
 }
 async function reformaMontar(painel, urlApi, urlPdf, silencioso){
   const seq = ++RT_SEQ;
