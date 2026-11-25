@@ -14431,6 +14431,16 @@ function nfePainelImpostosHtmlRelatorio(dash: ReturnType<typeof nfeCalcularDashb
 }
 // Relatório analítico por fornecedor (PDF) — compartilhado entre a tela do escritório (Busca de XML)
 // e a do cliente (Notas de Entradas/Saídas). empresaId já vem resolvido/autorizado pela rota.
+// CNPJ/CPF do TOMADOR do CT-e (quem paga o frete): toma3 aponta o papel (0 rem, 1 exped, 2 receb, 3 dest);
+// toma4 traz o tomador no próprio grupo. null = não deu pra identificar.
+function cteTomadorDoc(xml: string): string | null {
+  const x = String(xml || "");
+  const docDe = (tag: string) => { const i = x.indexOf(`<${tag}>`); if (i < 0) return null; const m = x.slice(i, i + 600).match(/<(CNPJ|CPF)>(\d+)<\//); return m ? m[2] : null; };
+  if (x.includes("<toma4>")) return docDe("toma4");
+  const t = x.match(/<toma3>\s*<toma>(\d)<\/toma>/)?.[1] ?? x.match(/<toma>(\d)<\/toma>/)?.[1];
+  const tag = ({ "0": "rem", "1": "exped", "2": "receb", "3": "dest" } as Record<string, string>)[String(t)];
+  return tag ? docDe(tag) : null;
+}
 async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, res: express.Response): Promise<any> {
   const empresa = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(empresaId) as any;
   if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
@@ -14486,6 +14496,11 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
   // de recebidas — uma seção por cliente — em vez de jogar tudo num bloco só da própria empresa.
   const grupos = new Map<string, { nome: string; cnpj: string | null; notas: any[]; subtotal: number }>();
   const canceladas: any[] = []; // válidas entram nos grupos; canceladas vão num quadro à parte, fora do total
+  // CT-e recebido em que a empresa NÃO é a tomadora (o frete é pago por outro — ex.: JBS paga o frete do gado
+  // que a MSM vendeu): não é entrada da empresa, o Domínio não lança. Vai num quadro à parte, fora do total
+  // (achado 2026-11-25: R$ 22,5 mil a mais que o Acompanhamento de Entradas do Domínio).
+  const empresaDoc = String(empresa.cnpj || "").replace(/\D/g, "");
+  const freteOutroTomador: any[] = [];
   for (const r of rows) {
     const detalhe = nfe.detalharNfe(r.xml);
     if (ufFiltro) {
@@ -14500,6 +14515,10 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
     const cpNome = (ehEmitida ? r.destinatarioNome : r.emitenteNome) || "(sem nome)";
     const nota = { ...r, tipo: r.tipo, itens: detalhe ? detalhe.itens : null, contraparteNome: cpNome, contraparteCnpj: cpCnpj || null };
     if (r.notaCancelada) { canceladas.push(nota); continue; }
+    if (r.tipo === "cte" && !ehEmitida && empresaDoc) {
+      const tomador = cteTomadorDoc(r.xml);
+      if (tomador && tomador !== empresaDoc) { freteOutroTomador.push(nota); continue; }
+    }
     const chave = cpCnpj || `sem-cnpj-${cpNome || r.id}`;
     if (!grupos.has(chave)) grupos.set(chave, { nome: cpNome, cnpj: cpCnpj || null, notas: [], subtotal: 0 });
     const g = grupos.get(chave)!;
@@ -14586,6 +14605,14 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
         </div>
       </div>`
     : "";
+  const freteHtml = freteOutroTomador.length
+    ? `<div style="margin-top:14px;">
+        <div style="font-size:12px; font-weight:700; color:#6b5a1e; margin-bottom:5px;">CT-e em que a empresa não é a tomadora <span style="font-weight:normal; color:#8a7a3a; font-size:10px;">(${freteOutroTomador.length} — frete pago por outra empresa, fora do total acima · R$ ${fmtMoedaRelatorio(freteOutroTomador.reduce((a, n) => a + (n.valorTotal || 0), 0))})</span></div>
+        <div style="border:1px solid #ece4c8; border-radius:7px; background:#fdfaf0; padding:4px 10px;">
+          ${freteOutroTomador.map((n) => `<div style="font-size:9px; padding:3px 0; border-bottom:1px solid #f3eddb;"><b>${escHtmlRelatorio(numeroDaNota(n))}</b> · ${fmtDataEmissaoRelatorio(n.dataEmissao)} · <b>R$ ${fmtMoedaRelatorio(n.valorTotal)}</b> — ${escHtmlRelatorio(n.contraparteNome || "—")} · tomador ${escHtmlRelatorio(fmtCnpjRelatorio(cteTomadorDoc(n.xml)))}</div>`).join("")}
+        </div>
+      </div>`
+    : "";
   // Paleta igual à do sistema (public/app.html :root): --accent #2ECC8F, --accent-deep #159873,
   // --accent-pale #DFF7EC — pedido explícito do usuário ("fundo verde claro do sistema").
   const html = `<style>
@@ -14618,7 +14645,8 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
     </div>
     ${blocosFornecedor}
     <div><span class="tag-total">Total geral: R$ ${fmtMoedaRelatorio(totalGeral)}</span></div>
-    ${canceladasHtml}`;
+    ${canceladasHtml}
+    ${freteHtml}`;
   try {
     const pdf = await contratos.gerarPdfDeHtml(html, `Relatório Analítico - ${empresa.nome}`, { landscape: true });
     res.setHeader("Content-Type", "application/pdf");
