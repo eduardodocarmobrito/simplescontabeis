@@ -302,8 +302,8 @@ table.layout > thead td, table.layout > tfoot td, table.layout > tbody > tr > td
 td.corpo { padding: 0 ${timbrado ? "20mm" : "0"} !important; vertical-align: top; }
 h1 { font-size: 16px; margin: 0 0 3px; color: #2f3b42; }
 h2 { font-size: 12.5px; margin: 16px 0 6px; color: #2f3b42; break-after: avoid; padding-bottom: 3px; border-bottom: 1.6px solid #c9a227; }
-.sub { font-size: 9.6px; color: #6b7880; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2.5px solid #c9a227; }
-p.txt { margin: 6px 0 8px; text-align: justify; } p.small { font-size: 9.2px; color: #52616a; }
+.sub { font-size: 9.6px; color: #6b7880; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2.5px solid #c9a227; text-align: justify; }
+p.txt { margin: 6px 0 8px; text-align: justify; } p.small { font-size: 9.2px; color: #52616a; text-align: justify; }
 table.t { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 9px; background: rgba(255,255,255,.94); margin: 6px 0 10px; }
 table.t th { text-align: left; background: #2f3b42; color: #fff; padding: 5px 6px; border: 1px solid #2f3b42; font-size: 8px; text-transform: uppercase; letter-spacing: .04em; }
 table.t td { padding: 5px 6px; border: 1px solid #dde3e6; vertical-align: top; word-wrap: break-word; }
