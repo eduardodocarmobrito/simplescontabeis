@@ -10912,6 +10912,7 @@ async function reformaRadMontar(painel, urlApi){
       ${tile('Crédito destacado nas compras', rtBRL(totCredito), `${rtNum(forn.length)} fornecedor(es) · ${rtNum(k.notas)} nota(s)`)}
       ${tile('Fornecedores a monitorar (RAD)', rtNum(elegiveis.length), 'com risco ou inconsistência no destaque')}
     </div>
+    <div id="radResumoBox" style="margin-bottom:14px;"></div>
     <div class="card" style="overflow-x:auto;">
       <h3 style="margin:0 0 4px;">Compras elegíveis a RAD</h3>
       <p class="subtitle" style="margin:0 0 10px;">Fornecedores com crédito em risco de glosa — onde o adquirente pode recolher a CBS via RAD e assegurar o crédito.</p>
@@ -10929,6 +10930,37 @@ async function reformaRadMontar(painel, urlApi){
       <div class="rt-mut" style="font-size:11.5px; margin-top:10px;">A emissão do DARF do RAD é feita pela integração oficial com a Receita Federal (painel acima) — depende das credenciais do Receita Integra do escritório. Emissão plena do RAD a partir de jan/2027.</div>
     </div>${radPerspectivaHtml(d)}`;
   radRfbMontar(radEmpresaId, radDe, radAte);
+  radResumoApuracao(document.getElementById('radResumoBox'), urlApi, d);
+}
+// Quadro de apuração da CBS: Débitos (saídas/vendas) − Créditos saudáveis (entradas/compras) = Saldo a
+// pagar. Puxa também a auditoria de SAÍDAS do cliente. Valores estimados (simulação), não é apuração oficial.
+async function radResumoApuracao(box, urlApi, dEntradas){
+  if(!box) return;
+  const fe = (dEntradas && dEntradas.fornecedores) || [];
+  const creditoEntradas = fe.reduce((s,f)=>s+(f.creditoDestacado||0),0);
+  const riscoEntradas = fe.reduce((s,f)=>s+(f.risco||0),0);
+  const saudaveis = Math.max(0, creditoEntradas - riscoEntradas);
+  box.innerHTML = `<div class="card"><div class="empty-state">🧮 Montando o resumo da CBS (débitos × créditos)…</div></div>`;
+  let debito = 0, notasSaida = 0, erroSaida = null;
+  try{
+    const ds = await api(urlApi + '&direcao=saida');
+    const fs = (ds && ds.fornecedores) || [];
+    debito = fs.reduce((s,f)=>s+(f.creditoDestacado||0),0);
+    notasSaida = (ds.kpis && ds.kpis.notas) || 0;
+  }catch(e){ erroSaida = e.message; }
+  const saldo = debito - saudaveis;
+  const tile=(t,v,s,cor)=>`<div class="rt-kpi"><div class="rt-kpi-t">${t}</div><div class="rt-kpi-v" style="${cor?`color:${cor};`:''}">${v}</div>${s?`<div class="rt-kpi-s">${s}</div>`:''}</div>`;
+  box.innerHTML = `<div class="card">
+    <h3 style="margin:0 0 4px;">🧮 Resumo da CBS no período (simulação)</h3>
+    <p class="subtitle" style="margin:0 0 10px;">O que você <b>deve</b> pelas vendas (saídas), menos o <b>crédito saudável</b> das compras (entradas), dá o <b>saldo a pagar</b>. Valores estimados com a CBS de referência — não é apuração oficial.</p>
+    <div class="rt-kpis">
+      ${tile('Débitos por saídas (vendas)', rtBRL(debito), notasSaida?`${rtNum(notasSaida)} nota(s) de venda`:(erroSaida?'sem auditoria de saídas':'sem notas de venda'), '#d03b3b')}
+      ${tile('Créditos saudáveis (entradas)', '− '+rtBRL(saudaveis), 'crédito seguro das compras', '#1f6e43')}
+      ${tile(saldo>=0?'Saldo a pagar (estimado)':'Saldo credor (estimado)', rtBRL(Math.abs(saldo)), saldo>=0?'CBS a recolher no período':'crédito a aproveitar depois', saldo>=0?'var(--accent-deep)':'#1f6e43')}
+      ${riscoEntradas>0?tile('Crédito em risco — RAD recupera', rtBRL(riscoEntradas), 'recolhendo a CBS via RAD você garante', '#c9a227'):''}
+    </div>
+    <div class="rt-mut" style="font-size:11.5px; margin-top:6px;"><b>Débitos (saídas) − Créditos saudáveis (entradas) = Saldo.</b> O crédito em <b>risco de glosa</b> não entra como "saudável"; pelo <b>RAD</b> você recolhe a CBS dele e recupera o crédito, reduzindo o saldo a pagar.${erroSaida?` <span style="color:var(--debit);">(não consegui a auditoria de saídas: ${esc(erroSaida)})</span>`:''}</div>
+  </div>`;
 }
 // Tabela "perspectiva" (demonstração pro cliente): as compras REAIS dos XMLs dele, a CBS destacada em
 // cada fornecedor e o que o RAD faz. Valores estimados — não é emissão. Aparece pro escritório e pro cliente.
