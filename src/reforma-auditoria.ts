@@ -322,8 +322,42 @@ export interface ResultadoNota {
   // Crédito (R$): destacado aproveitável, de referência (se fosse regime regular) no ano da nota e
   // projetado para 2027 (CBS estimada), e o que fica em risco de glosa por erro do fornecedor.
   credito: { aproveitavel: number; referencia: number; risco: number; perdaEstrutural: number; perdaErro: number; referencia2027: number; aproveitavel2027: number };
+  // Memória de cálculo do crédito 2027 (uma linha por item) — somada por fornecedor na tela/relatório.
+  memoria2027: LinhaMemoria2027[];
   itensConformes: number;
 }
+export interface LinhaMemoria2027 { situacao: string; reducao: string; base: number; aliq: number; ref: number; aprov: number }
+
+// Reduções por anexo (produtos) que podem valer pra um item que veio SEM o grupo IBS/CBS. Sem isso, o
+// crédito de referência do item sem destaque saía pela alíquota cheia — achado real (2026-11-24):
+// insumos agropecuários (Anexo IX, redução de 60%) sem o grupo contavam 11,3% em vez de 4,52%, e o
+// "Em jogo 2027" do fornecedor saía 2,5× maior. O NCM é confirmado na Calculadora oficial (RFB/CGIBS).
+// Ordem: primeiro as de 100%, depois as de 60%.
+function romano(n: number): string {
+  const t: [number, string][] = [[10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]];
+  let r = ""; for (const [v, l] of t) while (n >= v) { r += l; n -= v; }
+  return r || String(n);
+}
+// Memória de cálculo do "Em jogo 2027/ano" em texto (tooltip da tela e relatório do cliente).
+export function textoMemoria2027(m: { meses: number; de: string; ate: string; cbs: number; linhas: any[]; perdaPeriodo: number } | null, perdaAnual: number): string[] {
+  if (!m || !m.linhas.length) return [];
+  const brl = (v: number) => "R$ " + v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const pct = (v: number) => v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "%";
+  const data = (iso: string) => iso.slice(0, 10).split("-").reverse().join("/");
+  const it = (n: number) => `${n} ${n === 1 ? "item" : "itens"}`;
+  const aliqTxt = (l: any) => `${pct(l.aliq)} (CBS ${pct(m.cbs)} + IBS 0,10%, ${l.reducao})`;
+  const out: string[] = [];
+  for (const l of m.linhas) {
+    if (l.situacao === "com_destaque") out.push(`Com IBS/CBS destacado (${it(l.itens)}): base ${brl(l.base)} — crédito integral de ${brl(l.ref)}, nada em jogo.`);
+    else if (l.situacao === "sem_destaque") out.push(`Sem o grupo IBS/CBS na nota (${it(l.itens)}): base ${brl(l.base)} × ${aliqTxt(l)} = ${brl(l.ref)} de crédito que não seria tomado.`);
+    else if (l.situacao === "sn_dentro") out.push(`Simples com IBS/CBS no DAS (${it(l.itens)}): crédito no regime normal ${brl(l.base)} × ${aliqTxt(l)} = ${brl(l.ref)}; crédito permitido pelo Simples ${brl(l.aprov)}; diferença ${brl(l.perda)}.`);
+    else out.push(`Fornecedor sem direito a gerar crédito (MEI ou Simples sem regime informado) (${it(l.itens)}): base ${brl(l.base)} × ${aliqTxt(l)} = ${brl(l.ref)} de crédito que não seria tomado.`);
+  }
+  out.push(`Total no período de ${data(m.de)} a ${data(m.ate)} (${m.meses} ${m.meses === 1 ? "mês" : "meses"}): ${brl(m.perdaPeriodo)}.`);
+  out.push(`Por ano: ${brl(m.perdaPeriodo)} ÷ ${m.meses} × 12 = ${brl(perdaAnual)}. Premissa: compras no mesmo ritmo do período e fornecedor emitindo como hoje.`);
+  return out;
+}
+export const REDUCOES_ANEXO_SEM_GRUPO = ["200003", "200014", "200004", "200007", "200030", "200031", "200033", "200034", "200035", "200038", "200039"];
 
 // Notas em que o grupo IBSCBS é exceção legítima (NT 2025.002, UB12-10).
 function grupoDispensado(nota: NotaRT, it: ItemRT) {
@@ -336,6 +370,7 @@ export function auditarNota(nota: NotaRT, consultaNcm: ConsultaNcm, consultaVige
   const aliq = aliquotasAno(ano);
   const achados: Achado[] = [];
   const cred = { aproveitavel: 0, referencia: 0, risco: 0, perdaEstrutural: 0, perdaErro: 0, referencia2027: 0, aproveitavel2027: 0 };
+  const memoria2027: LinhaMemoria2027[] = [];
   let itensConformes = 0;
   const add = (a: Achado) => achados.push(a);
 
@@ -530,6 +565,19 @@ export function auditarNota(nota: NotaRT, consultaNcm: ConsultaNcm, consultaVige
     }
 
     // ---- Crédito do item ----
+    // Item sem o grupo IBS/CBS: a referência usa a redução do anexo em que o NCM se enquadra (confirmado
+    // na Calculadora oficial); sem enquadramento confirmado, alíquota cheia.
+    let reducaoTxt = cls && (pRedIBS || pRedCBS) ? `redução de ${fmt(pRedCBS, 0)}% (cClassTrib ${cls.cClassTrib}${cls.anexo && /^\d{1,2}$/.test(String(cls.anexo)) ? `, Anexo ${romano(Number(cls.anexo))}` : ""})` : "alíquota cheia";
+    if (!it.temIBSCBS && !cls && /^\d{8}$/.test(it.ncm)) {
+      for (const c of REDUCOES_ANEXO_SEM_GRUPO) {
+        if (consultaNcm(c, it.ncm, ano) !== true) continue;
+        const ci = CLASS.get(c);
+        if (!ci) continue;
+        pRedIBS = ci.pRedIBS; pRedCBS = ci.pRedCBS;
+        reducaoTxt = `redução de ${fmt(pRedCBS, 0)}% — NCM ${it.ncm} no Anexo ${romano(Number(ci.anexo))} (confirmado na Calculadora RFB)`;
+        break;
+      }
+    }
     if (aliq) {
       const pCBSano = aliq.pCBS ?? CBS_2027_ESTIMADA;
       cred.referencia += (vBCref * (pCBSano * (1 - pRedCBS / 100) + (aliq.pIBSUF + aliq.pIBSMun) * (1 - pRedIBS / 100))) / 100;
@@ -555,6 +603,10 @@ export function auditarNota(nota: NotaRT, consultaNcm: ConsultaNcm, consultaVige
     if (altaNoItem && aprov > 0) cred.risco += aprov;
     else cred.aproveitavel += aprov;
     cred.aproveitavel2027 += aprov27;
+    if (regime !== "pf") {
+      const situacao = regime === "regular" || regime === "sn_regular" ? (it.temIBSCBS ? "com_destaque" : "sem_destaque") : regime === "sn_dentro" && it.sn ? "sn_dentro" : "sem_credito";
+      memoria2027.push({ situacao, reducao: reducaoTxt, base: vBCref, aliq: CBS_2027_ESTIMADA * (1 - pRedCBS / 100) + 0.1 * (1 - pRedIBS / 100), ref: ref27, aprov: aprov27 });
+    }
     const refAno = aliq && regime !== "pf" ? (vBCref * ((aliq.pCBS ?? CBS_2027_ESTIMADA) * (1 - pRedCBS / 100) + (aliq.pIBSUF + aliq.pIBSMun) * (1 - pRedIBS / 100))) / 100 : 0;
     const perda = Math.max(0, refAno - aprov);
     if (regime === "regular" || regime === "sn_regular") cred.perdaErro += perda;
@@ -563,7 +615,7 @@ export function auditarNota(nota: NotaRT, consultaNcm: ConsultaNcm, consultaVige
     if (!novos.length) itensConformes++;
   }
   for (const k of Object.keys(cred) as (keyof typeof cred)[]) cred[k] = r2(cred[k]);
-  return { nota, regime, achados, credito: cred, itensConformes };
+  return { nota, regime, achados, credito: cred, memoria2027, itensConformes };
 }
 
 // Pares (cClassTrib, NCM) que a auditoria precisa validar na API oficial.
@@ -597,6 +649,7 @@ export function paresParaValidar(notas: NotaRT[]): { cClassTrib: string; ncm: st
       const cls = it.cClassTrib ? CLASS.get(it.cClassTrib) : null;
       if (cls?.anexo) put(cls.cClassTrib, it.ncm, ano);
       if (it.cClassTrib === "000001" && /^(0|1|2[0-4])/.test(it.ncm)) { put("200003", it.ncm, ano); put("200034", it.ncm, ano); }
+      if (!it.temIBSCBS && !it.cClassTrib) for (const c of REDUCOES_ANEXO_SEM_GRUPO) put(c, it.ncm, ano);
     }
   }
   return [...out.values()];

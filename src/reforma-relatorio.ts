@@ -75,6 +75,10 @@ export function htmlRelatorioReforma(d: any, escritorioNome: string, timbrado: s
       <td class="num">${saida ? brl(f.creditoDestacado) : f.perda2027Anual ? `<b>${brl(f.perda2027Anual)}</b>` : "—"}</td><td style="color:${STATUS[f.status].cor}; white-space:nowrap;">${STATUS[f.status].ic} ${STATUS[f.status].label}</td></tr>`).join("")}</tbody></table>
   ${d.fornecedores.length > forn.length ? `<p class="mut">+ ${d.fornecedores.length - forn.length} fornecedor(es) no painel do sistema.</p>` : ""}
 
+  ${!saida && forn.some((f: any) => f.perda2027Anual > 0 && f.memoriaTexto?.length) ? `<h2>Memória de cálculo do crédito 2027 em jogo</h2>
+  <p class="mut">Crédito de referência = base de cálculo × alíquota de 2027 (CBS estimada de ${String(d.fontes.cbs2027Estimada).replace(".", ",")}% + IBS de 0,10%, com a redução da classificação do produto). O valor em jogo é o crédito que deixa de ser tomado no período, levado para 12 meses.</p>
+  ${forn.filter((f: any) => f.perda2027Anual > 0 && f.memoriaTexto?.length).map((f: any) => `<div class="reco"><div class="reco-t">${esc(f.nome)} <span class="mut">· ${esc(fmtDoc(f.cnpj))} · em jogo ${brl(f.perda2027Anual)}/ano</span></div>${f.memoriaTexto.map((t: string) => `<div>• ${esc(t)}</div>`).join("")}</div>`).join("")}` : ""}
+
   ${pend.length ? `<h2>${saida ? "Correções por destinatário" : "Recomendações por fornecedor"}</h2>
   ${pend.slice(0, 15).map((f: any) => `<div class="reco"><div class="reco-t">${esc(f.nome)} <span class="mut">· ${esc(fmtDoc(f.cnpj))} · ${esc(f.regimeLabel)}</span></div><div>${esc(f.recomendacao)}</div></div>`).join("")}` : ""}
 

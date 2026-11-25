@@ -11084,7 +11084,7 @@ function rtTopFornHtml(forn){
   return `<div class="rt-rank">${top.map(f=>`<div class="rt-rank-row" data-forn="${esc(f.cnpj)}" title="Clique para ver as evidências">
     <div class="rt-rank-nome">${esc(f.nome)}<div class="rt-mut" style="font-size:11px;">${rtRegimeChip(f.regime, f.regimeLabel)}</div></div>
     <div class="rt-rank-bar"><div style="width:${(f.perda2027Anual/max*100).toFixed(1)}%;"></div></div>
-    <div class="rt-rank-v">${rtBRL(f.perda2027Anual)}<span class="rt-mut">/ano</span></div></div>`).join('')}</div>`;
+    <div class="rt-rank-v" title="${esc('Memória de cálculo'+String.fromCharCode(10)+(f.memoriaTexto||[]).join(String.fromCharCode(10)))}" style="cursor:help;">${rtBRL(f.perda2027Anual)}<span class="rt-mut">/ano</span></div></div>`).join('')}</div>`;
 }
 function rtFornTabelaHtml(forn){
   const t = normalizaTxt(RT_BUSCA_FORN), dig = RT_BUSCA_FORN.replace(/\D/g,'');
@@ -11100,7 +11100,7 @@ function rtFornTabelaHtml(forn){
       <td class="num">${rtNum(f.notas)}</td><td class="num">${rtBRL(f.valor)}</td><td class="num">${f.pctComGrupo}%</td>
       <td style="white-space:nowrap;">${f.alta?`<span style="color:#d03b3b;">⛔ ${f.alta}</span> `:''}${f.media?`<span style="color:#ec835a;">⚠ ${f.media}</span> `:''}${f.baixa?`<span class="rt-mut">• ${f.baixa}</span>`:''}${!f.alta&&!f.media&&!f.baixa?'<span style="color:#0ca30c;">✔</span>':''}</td>
       <td class="num">${rtBRL(f.creditoDestacado)}${f.risco?`<div style="color:#d03b3b; font-size:11px;">⛔ ${rtBRL(f.risco)} em risco</div>`:''}</td>
-      ${S?'':`<td class="num">${f.perda2027Anual?`<b>${rtBRL(f.perda2027Anual)}</b>`:'—'}</td>`}
+      ${S?'':`<td class="num">${f.perda2027Anual?`<b title="${esc('Memória de cálculo'+String.fromCharCode(10)+(f.memoriaTexto||[]).join(String.fromCharCode(10)))}" style="cursor:help; border-bottom:1px dotted currentColor;">${rtBRL(f.perda2027Anual)}</b>`:'—'}</td>`}
       <td style="white-space:nowrap;"><b>${f.score}</b> ${rtChip(RT_STATUS[f.status])}</td>
     </tr>`).join('')}</tbody></table>`;
 }

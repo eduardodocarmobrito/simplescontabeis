@@ -13410,6 +13410,7 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
           .sort((a: any, b: any) => b.perda - a.perda || b.base - a.base),
         perdaPeriodo: r2(Math.max(0, f.referencia2027 - f.aproveitavel2027)),
       },
+      memoriaTexto: saida ? [] : reformaAuditoria.textoMemoria2027({ meses, de, ate, cbs: reformaAuditoria.CBS_2027_ESTIMADA, linhas: [...f.memoria.values()].map((m: any) => ({ ...m, perda: Math.max(0, m.ref - m.aprov) })).sort((a: any, b: any) => (b.ref - b.aprov) - (a.ref - a.aprov) || b.base - a.base), perdaPeriodo: r2(Math.max(0, f.referencia2027 - f.aproveitavel2027)) }, perda2027Anual),
       ultimaNota: f.ultimaNotaDocId ? { docId: f.ultimaNotaDocId, numero: f.ultimaNotaNumero, serie: f.ultimaNotaSerie, dhEmi: f.ultimaEmissao, valor: r2(f.ultimaNotaValor) } : null,
     };
   }).sort((a, b) => b.perda2027Anual - a.perda2027Anual || b.alta - a.alta || b.valor - a.valor);
