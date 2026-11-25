@@ -17204,7 +17204,7 @@ async function renderPropostaEscritorio(id){
       </div>
       <div class="field"><label>Condições especiais (saem no PDF)</label><textarea id="peObs" rows="2" ${dis} placeholder="Ex.: implantação parcelada em 3x; primeira mensalidade 30 dias após a implantação.">${esc(c.observacoes||'')}</textarea></div>
       <div id="peResumo" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-top:6px;"></div>
-      ${!travada ? `<div class="row" style="margin-top:12px;"><button class="btn primary" id="peSalvar">Salvar</button><span id="peSalvoMsg" style="font-size:12.5px; color:var(--ink-soft);"></span></div>` : ''}
+      ${!travada ? `<div class="row" style="margin-top:12px;"><button class="btn primary" id="peSalvar" disabled>Salvar</button><button class="btn" id="peCancelar" disabled>Cancelar</button><span id="peSalvoMsg" style="font-size:12.5px; color:var(--ink-soft);"></span></div>` : ''}
     </div>`;
   const val = id => document.getElementById(id).value;
   const pct = x => Math.min(100, Math.max(0, propNum(x)));
@@ -17246,13 +17246,22 @@ async function renderPropostaEscritorio(id){
       item('Implantação', v.implantacaoFinal ? (propBRL(v.implantacaoFinal) + (cfg.implantacaoParcelas>1?` <span style="font-size:11px; font-weight:600; color:var(--ink-soft);">em ${cfg.implantacaoParcelas}×</span>`:'')) : 'isenta') + item('Resultado no 1º ano', propBRL0(v.liquido), v.liquido>=0?'var(--accent-deep)':'var(--debit)');
   };
   desenha();
-  box.querySelectorAll('input, textarea').forEach(i=>i.addEventListener(i.type==='checkbox'?'change':'input', desenha));
+  let peBaseline = JSON.stringify(lerCfg());
+  const peAtualizarBotoes = () => {
+    const dirty = JSON.stringify(lerCfg()) !== peBaseline;
+    const bs = document.getElementById('peSalvar'), bc = document.getElementById('peCancelar');
+    if(bs) bs.disabled = !dirty; if(bc) bc.disabled = !dirty;
+  };
+  box.querySelectorAll('input, textarea').forEach(i=>i.addEventListener(i.type==='checkbox'?'change':'input', ()=>{ desenha(); peAtualizarBotoes(); }));
   const salvar = async () => {
     if(travada) return;
     const r = await api('/propostas-escritorio/'+id, { method:'PUT', body:{ config: lerCfg() } });
+    peBaseline = JSON.stringify(lerCfg());  // novo estado salvo = limpo
+    peAtualizarBotoes();
     const msg = document.getElementById('peSalvoMsg'); if(msg) msg.textContent = 'Salvo ' + new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
     return r;
   };
+  document.getElementById('peCancelar')?.addEventListener('click', ()=>{ renderPropostaEscritorio(id); });
   document.getElementById('peVoltar').addEventListener('click', ()=>{ PROPOSTA_ABERTA=null; renderContratosPropostas(); });
   document.getElementById('peBaixarAssinada')?.addEventListener('click', ev=>rtBaixar('/api/propostas-escritorio/'+id+'/assinada', P.assinada.nome || 'proposta-assinada.pdf', ev.currentTarget, 'Baixando…'));
   document.getElementById('peNovoLink')?.addEventListener('click', async ()=>{
