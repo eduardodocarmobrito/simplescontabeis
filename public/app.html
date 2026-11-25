@@ -10868,6 +10868,7 @@ async function reformaMontar(painel, urlApi, urlPdf, silencioso){
   const seq = ++RT_SEQ;
   const paginaAtual = STATE.page;
   const direcaoRotulo = RT_ABA==='saidas' ? 'saída' : 'entrada';
+  if(!silencioso) painel._rtTentativas = 0;
   if(!silencioso) painel.innerHTML = `<div class="card"><div class="empty-state">⚖️ Auditando as notas de ${direcaoRotulo} — lendo cada XML item a item…</div></div>`;
   let d;
   try{ d = await api(urlApi); }
@@ -10883,6 +10884,15 @@ async function reformaMontar(painel, urlApi, urlPdf, silencioso){
     painel.innerHTML = `<div class="card"><div class="empty-state">Nenhuma NF-e/CT-e de ${direcaoReal} no período para <b>${esc(d.empresa.nome)}</b>. As notas chegam pela Busca de XML (certificado da empresa configurado).${avisoResumo}${avisoNfse}</div></div>`;
     return;
   }
+  // Análise precisa: enquanto houver consulta pendente na Calculadora oficial da RFB, NÃO mostra números
+  // parciais — mostra o progresso e tenta de novo (até ~4 min; depois mostra com o aviso de pendência).
+  if(d.validacao.pendentes>0 && !d.validacao.erroApi && (painel._rtTentativas||0) < 80){
+    painel._rtTentativas = (painel._rtTentativas||0) + 1;
+    painel.innerHTML = `<div class="card"><div class="empty-state">⏳ Conferindo na Calculadora oficial da RFB — faltam <b>${rtNum(d.validacao.pendentes)}</b> consulta(s).<br><span style="font-size:12.5px; color:var(--ink-soft);">A análise aparece quando todas as classificações estiverem validadas, para os valores saírem exatos. Pode levar alguns instantes.</span></div></div>`;
+    setTimeout(()=>{ if(seq===RT_SEQ && STATE.page===paginaAtual && document.body.contains(painel)) reformaMontar(painel, urlApi, urlPdf, true); }, 3000);
+    return;
+  }
+  painel._rtTentativas = 0;
   // Lembra filtros/scroll quando o painel se atualiza sozinho (validação oficial em andamento).
   const scrollAntes = silencioso ? (document.scrollingElement||document.documentElement).scrollTop : 0;
   painel.innerHTML = rtPainelHtml(d, urlPdf);

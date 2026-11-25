@@ -13465,19 +13465,33 @@ function reformaPeriodo(q: any) {
   const de = typeof q.de === "string" && /^\d{4}-\d{2}-\d{2}$/.test(q.de) ? q.de : dIni.toISOString().slice(0, 10);
   return { de, ate };
 }
-app.get("/api/reforma/auditoria", blockCliente, requirePermissao("reforma", "visualizar"), requireModuloEscritorioVendido("reforma"), (req, res) => {
+// Análise PRECISA (pedido do usuário 2026-11-24): antes de devolver os números, espera a Calculadora
+// oficial (RFB/CGIBS) validar os pares NCM × cClassTrib pendentes — nem que a tela demore. Recalcula
+// quando a fila esvazia (validações novas podem mudar redução/crédito). Para no limite de tempo ou se a
+// API estiver fora do ar (aí o painel mostra o aviso e a tela continua tentando).
+async function reformaCalcularValidado(escritorioId: number, empresaId: number, de: string, ate: string, semLimite: boolean, direcao: "entrada" | "saida", maxMs: number) {
+  let d = reformaCalcularAuditoria(escritorioId, empresaId, de, ate, semLimite, direcao);
+  const t0 = Date.now();
+  for (let rodada = 0; rodada < 4 && d.validacao.pendentes > 0 && !d.validacao.erroApi; rodada++) {
+    while (reformaFila.size && Date.now() - t0 < maxMs && Date.now() >= reformaApiPausaAte) await new Promise((r) => setTimeout(r, 400));
+    if (Date.now() - t0 >= maxMs || Date.now() < reformaApiPausaAte) break;
+    d = reformaCalcularAuditoria(escritorioId, empresaId, de, ate, semLimite, direcao);
+  }
+  return d;
+}
+app.get("/api/reforma/auditoria", blockCliente, requirePermissao("reforma", "visualizar"), requireModuloEscritorioVendido("reforma"), async (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.query.empresaId);
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const { de, ate } = reformaPeriodo(req.query);
-  try { res.json(reformaCalcularAuditoria(user.escritorioId, empresaId, de, ate, false, req.query.direcao === "saida" ? "saida" : "entrada")); }
+  try { res.json(await reformaCalcularValidado(user.escritorioId, empresaId, de, ate, false, req.query.direcao === "saida" ? "saida" : "entrada", 20_000)); }
   catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 // Relatório em PDF (o documento entregue ao cliente) — mesmo cálculo do painel, com o timbrado do escritório.
 async function reformaEnviarPdf(res: any, escritorioId: number, empresaId: number, q: any) {
   const { de, ate } = reformaPeriodo(q);
   try {
-    const dados = reformaCalcularAuditoria(escritorioId, empresaId, de, ate, false, q.direcao === "saida" ? "saida" : "entrada");
+    const dados = await reformaCalcularValidado(escritorioId, empresaId, de, ate, false, q.direcao === "saida" ? "saida" : "entrada", 90_000);
     const esc = sqlite.prepare(`SELECT nome FROM escritorios WHERE id = ?`).get(escritorioId) as any;
     const pdf = await gerarPdfRelatorioReforma(dados, esc?.nome || "Simples Contábeis", contratos.timbradoDataUri(timbradoParaEscritorio(escritorioId)));
     const nome = `Auditoria Reforma Tributaria - ${String(dados.empresa.nome || "").replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf`;
@@ -13601,11 +13615,11 @@ app.get("/api/reforma/minha-empresa/auditoria/pdf", requireCliente, requireReven
   if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
   await reformaEnviarPdf(res, user.escritorioId, user.empresaId, req.query);
 });
-app.get("/api/reforma/minha-empresa/auditoria", requireCliente, requireRevendaCliente("reforma"), (req, res) => {
+app.get("/api/reforma/minha-empresa/auditoria", requireCliente, requireRevendaCliente("reforma"), async (req, res) => {
   const user = (req as any).user;
   if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
   const { de, ate } = reformaPeriodo(req.query);
-  try { res.json(reformaCalcularAuditoria(user.escritorioId, user.empresaId, de, ate, false, req.query.direcao === "saida" ? "saida" : "entrada")); }
+  try { res.json(await reformaCalcularValidado(user.escritorioId, user.empresaId, de, ate, false, req.query.direcao === "saida" ? "saida" : "entrada", 20_000)); }
   catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 // ---------- Reforma Tributária: Diagnóstico de regime pós-reforma (ver reforma-diagnostico.ts) ----------
