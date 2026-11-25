@@ -12879,7 +12879,8 @@ app.get("/api/nfe/documentos/dashboard", blockCliente, requirePermissao("nfe-bus
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
-  res.json(nfeCalcularDashboard(user, empresaId, dataDe, dataAte));
+  const direcao = req.query.direcao === "emitida" || req.query.direcao === "recebida" ? req.query.direcao : null;
+  res.json(nfeCalcularDashboard(user, empresaId, dataDe, dataAte, direcao));
 });
 app.get("/api/nfe/documentos/contagem", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
   const user = (req as any).user;
@@ -14477,7 +14478,7 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
   // Mesmos dois painéis do topo da tela (Perfil das Notas + Impostos no período), calculados com o
   // mesmo escopo empresa+data desta exportação — direção/tipo/busca não entram aqui porque o painel na
   // tela também não usa esses três (sempre nfe/nfce da empresa inteira no período).
-  const dash = nfeCalcularDashboard(user, empresaId, dataDe, dataAte);
+  const dash = nfeCalcularDashboard(user, empresaId, dataDe, dataAte, direcao);
 
   // Agrupa pela CONTRAPARTE (a "outra" parte da nota): numa nota RECEBIDA é o emitente (fornecedor);
   // numa nota EMITIDA é o destinatário (tomador/cliente). Assim o relatório de emitidas fica igual ao

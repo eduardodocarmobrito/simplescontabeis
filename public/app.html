@@ -12038,6 +12038,7 @@ async function pageNfeBusca(){
       const p = new URLSearchParams({ empresaId });
       if(de) p.set('dataDe', de);
       if(ate) p.set('dataAte', ate);
+      if(nfeDocDirecao) p.set('direcao', nfeDocDirecao); // resumo/perfil/impostos seguem a aba (emitidas/recebidas)
       let d;
       try{ d = await api('/nfe/documentos/dashboard?'+p.toString()); }
       catch(e){ body.innerHTML = '<div class="empty-state" style="color:var(--debit)">'+esc(e.message)+'</div>'; return; }
@@ -12363,6 +12364,7 @@ async function pageNfeBusca(){
       box.querySelectorAll('.tab[data-direcao]').forEach(x=>x.classList.toggle('active', x===t));
       atualizarBotaoAnalitico();
       carregarDocumentos();
+      carregarDashboard();
     }));
     box.querySelector('.tab[data-direcao="emitida"]').classList.add('active');
     atualizarBotaoAnalitico();
@@ -12371,6 +12373,7 @@ async function pageNfeBusca(){
       box.querySelectorAll('.tab[data-direcao]').forEach(x=>x.classList.toggle('active', x.dataset.direcao===direcao));
       atualizarBotaoAnalitico();
       carregarDocumentos();
+      carregarDashboard();
     }
     const btnImportarXml = document.getElementById('btnNfeImportarXml');
     const inputImportarXml = document.getElementById('nfeImportarXmlInput');
