@@ -14443,7 +14443,8 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
   // Sem travar em nfe/nfce: a tela também exporta com o filtro em CT-e/MDF-e/NFS-e — só evento fica de
   // fora (não é documento pra listar por fornecedor). O "tipo" abaixo, quando vem da tela, já restringe
   // mais ainda; sem ele, pega todos os tipos reais do período.
-  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id = ?`, `d.tipo != 'evento'`];
+  // MDF-e não é documento fiscal de compra/venda (é manifesto do transporte): fica fora da lista e dos subtotais.
+  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id = ?`, `d.tipo != 'evento'`, `d.tipo != 'mdfe'`];
   const params: any[] = [user.escritorioId, empresaId];
   if (tipo) { condicoes.push(`d.tipo = ?`); params.push(tipo); }
   if (direcao) { condicoes.push(`${direcaoExpr} = ?`); params.push(direcao); }
