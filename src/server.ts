@@ -14519,6 +14519,10 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
   // (achado 2026-11-25: R$ 22,5 mil a mais que o Acompanhamento de Entradas do Domínio).
   const empresaDoc = String(empresa.cnpj || "").replace(/\D/g, "");
   const freteOutroTomador: any[] = [];
+  // NF-e "recebida" que na verdade é nota de ENTRADA do próprio emitente (tpNF=0 — ex.: o fornecedor recebe de
+  // volta a mercadoria devolvida pela empresa, ou compra de produtor): para a empresa é saída, não entrada; o
+  // Domínio não lança. Quadro à parte, fora do total (achado 2026-11-25: Gazzoni 123858 "Devolução de Venda").
+  const entradaDoEmitente: any[] = [];
   for (const r of rows) {
     const detalhe = nfe.detalharNfe(r.xml);
     if (ufFiltro) {
@@ -14536,6 +14540,7 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
     if (r.tipo === "nfse") { const vs = Number(String(r.xml).match(/<vServ>([\d.]+)<\/vServ>/)?.[1]); if (vs > 0) r.valorTotal = vs; }
     const nota = { ...r, tipo: r.tipo, itens: detalhe ? detalhe.itens : null, contraparteNome: cpNome, contraparteCnpj: cpCnpj || null };
     if (r.notaCancelada) { canceladas.push(nota); continue; }
+    if ((r.tipo === "nfe" || r.tipo === "nfce") && !ehEmitida && /<tpNF>0<\/tpNF>/.test(String(r.xml))) { entradaDoEmitente.push(nota); continue; }
     if (r.tipo === "cte" && !ehEmitida && empresaDoc) {
       const tomador = cteTomadorDoc(r.xml);
       if (tomador && tomador !== empresaDoc) { freteOutroTomador.push(nota); continue; }
@@ -14626,6 +14631,14 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
         </div>
       </div>`
     : "";
+  const entradaEmitenteHtml = entradaDoEmitente.length
+    ? `<div style="margin-top:14px;">
+        <div style="font-size:12px; font-weight:700; color:#3f5a7a; margin-bottom:5px;">Notas de entrada emitidas pelo fornecedor <span style="font-weight:normal; color:#5a7290; font-size:10px;">(${entradaDoEmitente.length} — ex.: devolução recebida por ele; para a empresa não é entrada, fora do total acima · R$ ${fmtMoedaRelatorio(entradaDoEmitente.reduce((a, n) => a + (n.valorTotal || 0), 0))})</span></div>
+        <div style="border:1px solid #d6e0ec; border-radius:7px; background:#f4f8fc; padding:4px 10px;">
+          ${entradaDoEmitente.map((n) => `<div style="font-size:9px; padding:3px 0; border-bottom:1px solid #e3eaf3;"><b>${escHtmlRelatorio(numeroDaNota(n))}</b> · ${fmtDataEmissaoRelatorio(n.dataEmissao)} · <b>R$ ${fmtMoedaRelatorio(n.valorTotal)}</b> — ${escHtmlRelatorio(n.contraparteNome || "—")} · ${escHtmlRelatorio(String(n.xml).match(/<natOp>([^<]*)<\/natOp>/)?.[1] || "")}</div>`).join("")}
+        </div>
+      </div>`
+    : "";
   const freteHtml = freteOutroTomador.length
     ? `<div style="margin-top:14px;">
         <div style="font-size:12px; font-weight:700; color:#6b5a1e; margin-bottom:5px;">CT-e em que a empresa não é a tomadora <span style="font-weight:normal; color:#8a7a3a; font-size:10px;">(${freteOutroTomador.length} — frete pago por outra empresa, fora do total acima · R$ ${fmtMoedaRelatorio(freteOutroTomador.reduce((a, n) => a + (n.valorTotal || 0), 0))})</span></div>
@@ -14667,6 +14680,7 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
     ${blocosFornecedor}
     <div><span class="tag-total">Total geral: R$ ${fmtMoedaRelatorio(totalGeral)}</span></div>
     ${canceladasHtml}
+    ${entradaEmitenteHtml}
     ${freteHtml}`;
   try {
     const pdf = await contratos.gerarPdfDeHtml(html, `Relatório Analítico - ${empresa.nome}`, { landscape: true });
