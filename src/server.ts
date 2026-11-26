@@ -10728,6 +10728,11 @@ async function executarRecalculoDarfDctfweb(periodoId: number, user: any, vencim
     sqlite
       .prepare(`INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, data_vencimento, pdf_path) VALUES (?, ?, 'darf_dctfweb', ?, ?, ?)`)
       .run(periodo.empresaId, empConfig.escritorio_id, guia.periodoApuracao, vencIso ? vencIso.replace(/-/g, "") : null, caminho);
+    // Mesmo motivo do ajuste na busca automática (ver integraContadorBuscarEmpresaInterno): sem isso,
+    // o card "Documentos Pendentes de Envio" continuava acusando a competência mesmo com o recálculo
+    // (pedido manualmente aqui) já anexado, até a próxima rotina quinzenal de situação.
+    try { await dctfwebConsultarSituacao(empConfig.escritorio_id, periodo.empresaId, `${anoPA}${mesPA}`); }
+    catch (e: any) { console.error(`[Integra Contador] reconsulta de situação (pós-recálculo manual) da empresa ${periodo.empresaId} falhou:`, e.message); }
     return { ok: true };
   } catch (e: any) {
     return { ok: false, status: 502, error: e.message };
@@ -18760,6 +18765,17 @@ async function integraContadorBuscarEmpresaInterno(
             situacaoNaoAtiva
           );
           novos++;
+          // Achado em auditoria (2026-11-26, MSM AGROPECUARIA competência 10/2026): regenerar a guia
+          // aqui não atualiza dctfweb_situacao — ela só é reconsultada pela rotina quinzenal (dias
+          // 15/22), que pode já ter passado. Resultado: o card "Documentos Pendentes de Envio" continua
+          // acusando a competência como pendente por até ~3 semanas, mesmo com a guia nova (e correta)
+          // já anexada — porque GRUPO_AUSENTE/cardEnvioAtraso só confiam na guia quando dctfweb_situacao
+          // diz "ativa". Reconsulta na hora (só nesse caso, que já é a exceção, não todo dia pra toda
+          // empresa) pra o card refletir a realidade sem esperar a próxima rotina.
+          if (situacaoNaoAtiva) {
+            try { await dctfwebConsultarSituacao(empConfig.escritorio_id, empresaId, `${anoPA}${mesPA}`); }
+            catch (e: any) { console.error(`[Integra Contador] reconsulta de situação (pós-regeneração) da empresa ${empresaId} falhou:`, e.message); }
+          }
         }
       } catch (e: any) {
         if (e.pular) { /* guia já entregue — nada a fazer */ } else {
