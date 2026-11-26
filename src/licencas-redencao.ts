@@ -48,14 +48,16 @@ async function logar(page: any, cnpj: string, senha: string): Promise<void> {
   }
 }
 
-// Consulta uma empresa: loga, abre "Consultar Licenças e Documentos" e lê a lista. `baixar(item)`
-// decide, item a item, se vale a pena baixar o PDF agora (quem chama sabe se o processo já é
-// conhecido ou é novo/renovado) — evita baixar tudo sempre à toa. Reaproveita um browser já aberto
-// (bulk, ver licencaRedencaoConsultarTodas em server.ts) ou abre/fecha um só pra esta chamada.
+// Consulta uma empresa: loga, abre "Consultar Licenças e Documentos" e lê a lista inteira de uma vez.
+// `escolherParaBaixar(itens)` recebe a lista COMPLETA (não item a item) — importante pra decidir
+// certo na virada de ano/renovação: pode haver mais de uma "Vigente" do mesmo tipo ao mesmo tempo
+// (ex.: a de 2026 ainda não caiu pra "Vencida" no portal no instante em que a de 2027 já apareceu),
+// então quem chama escolhe a de processo mais recente por tipo, não qualquer uma. Reaproveita um
+// browser já aberto (bulk, ver licencaRedencaoConsultarTodas em server.ts) ou abre/fecha um só aqui.
 export async function consultarLicencasRedencao(
   cnpj: string,
   senha: string,
-  opts: { baixar?: (item: ItemLicencaRedencao) => boolean; browserExterno?: any } = {}
+  opts: { escolherParaBaixar?: (itens: ItemLicencaRedencao[]) => ItemLicencaRedencao[]; browserExterno?: any } = {}
 ): Promise<{ itens: (ItemLicencaRedencao & { pdfBase64?: string })[] }> {
   const browser = opts.browserExterno || (await abrirNavegadorRedencao());
   const ctx = await browser.newContext({ acceptDownloads: true });
@@ -80,10 +82,11 @@ export async function consultarLicencasRedencao(
         } as ItemLicencaRedencao;
       });
     });
+    const paraBaixar = new Set(opts.escolherParaBaixar ? opts.escolherParaBaixar(itensBase) : []);
     const itens: (ItemLicencaRedencao & { pdfBase64?: string })[] = [];
     for (const item of itensBase) {
       let pdfBase64: string | undefined;
-      if (opts.baixar?.(item)) {
+      if (paraBaixar.has(item)) {
         try {
           const card = page.locator(".card-licenca").filter({ hasText: item.processo }).filter({ hasText: item.nome }).first();
           const [dl] = await Promise.all([

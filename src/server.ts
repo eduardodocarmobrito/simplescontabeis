@@ -16947,6 +16947,11 @@ function licencaRedencaoTipoDoNome(nome: string): "alvara" | "vigilancia_sanitar
   if (/^Licen[çc]a Sanit[áa]ria/i.test(nome)) return "vigilancia_sanitaria";
   return null;
 }
+// Nº do processo é sempre "L" + ano + sequencial (ex.: L202600004465) — usa o ano embutido aí (não o
+// nome, que só às vezes tem ano) pra sempre reconhecer a licença mais nova entre as Vigentes.
+function licencaRedencaoAnoDoProcesso(processo: string): number {
+  return Number(/^L(\d{4})/.exec(processo)?.[1] || 0);
+}
 async function licencaRedencaoConsultarEmpresa(
   escritorioId: number,
   empresa: { id: number; nome: string },
@@ -16962,10 +16967,22 @@ async function licencaRedencaoConsultarEmpresa(
     ]);
     const { itens } = await licencasRedencao.consultarLicencasRedencao(cnpjLogin, senha, {
       browserExterno: browser,
-      baixar: (item) => {
-        if (item.status !== "vigente") return false;
-        const tipo = licencaRedencaoTipoDoNome(item.nome);
-        return !!tipo && conhecidos.get(tipo) !== item.processo;
+      // Entre as "Vigentes" de um mesmo tipo (pode haver mais de uma por um instante, na virada do
+      // ano/renovação — ver comentário em consultarLicencasRedencao), fica só com a de processo mais
+      // novo; só baixa se ela for realmente diferente da última que já conhecemos.
+      escolherParaBaixar: (itensTodos) => {
+        const melhorPorTipo = new Map<string, { item: (typeof itensTodos)[number]; ano: number }>();
+        for (const item of itensTodos) {
+          if (item.status !== "vigente") continue;
+          const tipo = licencaRedencaoTipoDoNome(item.nome);
+          if (!tipo) continue;
+          const ano = licencaRedencaoAnoDoProcesso(item.processo);
+          const atual = melhorPorTipo.get(tipo);
+          if (!atual || ano > atual.ano) melhorPorTipo.set(tipo, { item, ano });
+        }
+        const resultado: (typeof itensTodos)[number][] = [];
+        for (const [tipo, { item }] of melhorPorTipo) if (conhecidos.get(tipo) !== item.processo) resultado.push(item);
+        return resultado;
       },
     });
     for (const item of itens) {
@@ -17108,20 +17125,38 @@ app.get("/api/empresas/licenca-redencao/status", blockCliente, requirePermissao(
   ).n;
   res.json({ progresso: licencaRedencaoProgressoDe(user.escritorioId), totalConfigurado });
 });
-// Agendador: 2x/dia (mesma cadência do CND municipal), só pras empresas com credencial cadastrada e ativa.
-setInterval(() => {
+// Agendador: 1x/mês, todo dia 15 (pedido do usuário 2026-11-26 — licença é renovação anual, não
+// precisa checar 2x/dia como a CND). Mesmo desenho do DAS mensal (dasPagamentoAgendador): checa a
+// cada 30min se "dia >= 15" e ainda não rodou neste mês — "dia >= 15" (não "=== 15") garante que, se
+// o servidor estiver fora do ar bem no dia 15, roda assim que voltar, em vez de pular o mês inteiro.
+sqlite.exec(`CREATE TABLE IF NOT EXISTS licenca_redencao_rotina (
+  escritorio_id INTEGER PRIMARY KEY REFERENCES escritorios(id),
+  mes TEXT,
+  executado_em TEXT
+)`);
+const LICENCA_REDENCAO_ROTINA_DIA = 15;
+function licencaRedencaoAgendadorMensal() {
+  const agora = agoraBrasilia();
+  if (agora.dia < LICENCA_REDENCAO_ROTINA_DIA) return;
+  const mesChave = `${agora.ano}-${String(agora.mes).padStart(2, "0")}`;
   const escritorios = sqlite
     .prepare(`SELECT DISTINCT e.escritorio_id as id FROM empresa_licenca_redencao_config c JOIN empresas e ON e.id = c.empresa_id WHERE c.ativo = 1`)
     .all() as any[];
   for (const esc of escritorios) {
+    const jaRodouEsteMes = sqlite.prepare(`SELECT 1 FROM licenca_redencao_rotina WHERE escritorio_id = ? AND mes = ?`).get(esc.id, mesChave);
+    if (jaRodouEsteMes) continue;
+    sqlite
+      .prepare(`INSERT INTO licenca_redencao_rotina (escritorio_id, mes, executado_em) VALUES (?, ?, datetime('now')) ON CONFLICT(escritorio_id) DO UPDATE SET mes=excluded.mes, executado_em=excluded.executado_em`)
+      .run(esc.id, mesChave);
     (async () => {
       try {
         const r = await licencaRedencaoConsultarTodas(esc.id);
-        if (r.total) console.log(`[licencas redencao] ${r.ok}/${r.total} empresa(s), ${r.novos} licença(s) nova(s)`);
-      } catch (e: any) { console.error("[licencas redencao]", e.message); }
+        if (r.total) console.log(`[licencas redencao] mensal (dia ${LICENCA_REDENCAO_ROTINA_DIA}+): ${r.ok}/${r.total} empresa(s), ${r.novos} licença(s) nova(s)`);
+      } catch (e: any) { console.error("[licencas redencao] mensal:", e.message); }
     })();
   }
-}, 12 * 60 * 60 * 1000);
+}
+setInterval(licencaRedencaoAgendadorMensal, 30 * 60_000);
 
 // Envia o PDF (ajustado) de Entradas/Saídas pros contatos da empresa (e-mail + WhatsApp). Mesma mecânica
 // do envio de Programação de Férias (ver enviarRelatorioEmpresa em ferias.ts).
