@@ -1305,18 +1305,27 @@ function confirmarReenvioModal(ja){
   });
 }
 // Caixa de confirmação de envio de e-mail de um documento da grade Envio de Documentos: mostra pra
-// quais e-mails vai ANTES de enviar. Retorna true se foi enviado, false se cancelou/sem destinatário.
+// quais e-mails vai ANTES de enviar. Retorna lista de e-mails selecionados, ou [] se cancelou.
 function confirmarEnvioEmailModal(empresaNome, dests){
   return new Promise(resolve=>{
-    const linhas = dests.map(d=>`<li style="margin:3px 0;">✉️ <b>${esc(d.email)}</b>${d.nome?` <span style="color:var(--ink-soft);">— ${esc(d.nome)}</span>`:''}</li>`).join('');
+    const linhas = dests.map((d,i)=>`
+      <label class="checkbox-row" style="margin:6px 0; align-items:flex-start; gap:8px;">
+        <input type="checkbox" class="emlDestChk" value="${esc(d.email)}" checked style="margin-top:2px;">
+        <span>✉️ <b>${esc(d.email)}</b>${d.nome?` <span style="color:var(--ink-soft);">— ${esc(d.nome)}</span>`:''}</span>
+      </label>`).join('');
     openModal(`<h3>Enviar e-mail</h3>`
-      + `<div style="font-size:13px; line-height:1.5;">O documento será enviado${empresaNome?` para os contatos de <b>${esc(empresaNome)}</b>`:''}:</div>`
-      + `<ul style="margin:10px 0 0; padding-left:20px; max-height:230px; overflow:auto;">${linhas}</ul>`
+      + `<div style="font-size:13px; line-height:1.5; margin-bottom:10px;">Selecione os destinatários${empresaNome?` de <b>${esc(empresaNome)}</b>`:''}:</div>`
+      + `<div style="max-height:260px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:10px 14px;">${linhas}</div>`
       + `<div class="modal-actions" style="margin-top:16px; display:flex; gap:8px; justify-content:flex-end;">`
-      + `<button class="btn" id="emlDocNao">Cancelar</button><button class="btn primary" id="emlDocSim">Enviar</button></div>`, '460px');
-    let done=false; const fim=v=>{ if(done)return; done=true; closeModal(); resolve(v); };
-    document.getElementById('emlDocNao').addEventListener('click', ()=>fim(false));
-    document.getElementById('emlDocSim').addEventListener('click', ()=>fim(true));
+      + `<button class="btn" id="emlDocNao">Cancelar</button><button class="btn primary" id="emlDocSim">Enviar</button></div>`, '480px');
+    let done=false;
+    const fim=sels=>{ if(done)return; done=true; closeModal(); resolve(sels); };
+    document.getElementById('emlDocNao').addEventListener('click', ()=>fim([]));
+    document.getElementById('emlDocSim').addEventListener('click', ()=>{
+      const sels=[...document.querySelectorAll('.emlDestChk:checked')].map(c=>c.value);
+      if(!sels.length){ toast('Selecione pelo menos um destinatário.','err'); return; }
+      fim(sels);
+    });
   });
 }
 async function enviarEmailDocComPreview(docId){
@@ -1325,8 +1334,9 @@ async function enviarEmailDocComPreview(docId){
   catch(e){ toast(e.message,'err'); return false; }
   const dests = (prev && prev.destinatarios) || [];
   if(!dests.length){ toast('Esta empresa não tem contatos de e-mail cadastrados (marque "Receber e-mails" no contato).','err'); return false; }
-  if(!await confirmarEnvioEmailModal(prev.empresaNome, dests)) return false;
-  await api('/envio/documentos/'+docId+'/reenviar-email', { method:'POST' });
+  const sels = await confirmarEnvioEmailModal(prev.empresaNome, dests);
+  if(!sels.length) return false;
+  await api('/envio/documentos/'+docId+'/reenviar-email', { method:'POST', body:{ emails: sels } });
   return true;
 }
 // Executa um POST de envio por WhatsApp que pode responder 409 {jaEnviado}. Retorna o resultado do

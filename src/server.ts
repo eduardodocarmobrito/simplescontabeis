@@ -10956,8 +10956,10 @@ app.post("/api/envio/documentos/:id/reenviar-email", blockCliente, requirePermis
     .prepare(`SELECT a.empresa_id as empresaId, a.template_id as templateId, t.nome as templateNome FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id WHERE a.id = ?`)
     .get(doc.atribuicaoId) as any;
   if (!atrib || !podeAcessarEmpresa(user, atrib.empresaId)) return res.status(404).json({ error: "Documento não encontrado." });
-  const contatos = sqlite.prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1`).all(atrib.empresaId) as any[];
-  if (!contatos.length) return res.status(400).json({ error: "Esta empresa não tem contatos de e-mail cadastrados." });
+  let contatos = sqlite.prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1`).all(atrib.empresaId) as any[];
+  const emailsSel: string[] = Array.isArray(req.body?.emails) ? req.body.emails.map(String) : [];
+  if (emailsSel.length) contatos = contatos.filter((c) => emailsSel.includes(c.email));
+  if (!contatos.length) return res.status(400).json({ error: "Nenhum destinatário selecionado." });
   if (!fs.existsSync(doc.file_path)) return res.status(404).json({ error: "Arquivo não encontrado no servidor." });
   const rotulo = doc.mes ? `${doc.mes}/${doc.ano}` : doc.rotulo || String(doc.ano);
   const assunto = `${atrib.templateNome} — ${rotulo}`;
