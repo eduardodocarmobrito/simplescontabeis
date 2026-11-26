@@ -25529,7 +25529,7 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
 // que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
 // Painel.
-const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_estadual", "cnd_municipal", "dctfweb_nao_entregue", "folha_nao_fechada", "das_nao_pago", "pgfn_divida_ativa"];
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_estadual", "cnd_municipal", "dctfweb_nao_entregue", "folha_nao_fechada", "das_nao_pago", "pgfn_divida_ativa", "maed_sief"];
 
 // Cards "DCTF-Web Não Entregue" e "Fechamento da Folha": usam a MESMA validação do quadro DP/RH ›
 // Obrigações do Mês (transmitida = DCTFWeb Ativa no e-CAC; Folha = Ativa com origem eSocial; marcação
@@ -26398,6 +26398,7 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
   if (tipo === "das_atraso") return cardDasEmAtraso(user);
   if (tipo === "das_nao_pago") return cardDasNaoPago(user);
   if (tipo === "pgfn_divida_ativa") return cardPgfnDividaAtiva(user);
+  if (tipo === "maed_sief") return cardMaedSief(user);
   if (tipo === "situacao_fiscal") return cardSituacaoFiscal(user);
   if (tipo === "efd_omisso") return cardEfdOmisso(user);
   if (tipo === "dctfweb_nao_entregue") return cardObrigacaoNaoTransmitida(user, "dprh_dctfweb");
@@ -30062,6 +30063,30 @@ app.post("/api/dashboard/pgfn-divida-ativa/executar", blockCliente, requirePermi
 app.get("/api/dashboard/pgfn-divida-ativa/status", requirePermissao("dashboard", "visualizar"), (req, res) => {
   res.json({ progresso: pgfnDividaAtivaProgresso });
 });
+function cardMaedSief(user: any): any[] {
+  const escritorioId = user.escritorioId;
+  const visiveis = new Set(empresasVisiveis(user));
+  const rows = sqlite
+    .prepare(
+      `SELECT p.empresa_id as empresaId, e.nome as empresaNome, p.debitos_json as debitosJson, p.sitfis_em as sitfisEm
+       FROM integracontador_pgfn_situacao p
+       JOIN empresas e ON e.id = p.empresa_id AND e.ativo = 1 AND e.escritorio_id = ?
+       WHERE p.escritorio_id = ? AND p.status = 'com_debito'`
+    )
+    .all(escritorioId, escritorioId) as any[];
+  const out: any[] = [];
+  for (const r of rows) {
+    if (!visiveis.has(r.empresaId)) continue;
+    let debitos: any[] = [];
+    try { debitos = JSON.parse(r.debitosJson || "[]"); } catch {}
+    const maed = debitos.filter((d) => String(d.receita || "").toUpperCase().includes("MAED"));
+    if (!maed.length) continue;
+    const totalMaed = maed.reduce((s: number, d: any) => s + (d.saldoConsolidado || 0), 0);
+    out.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, sitfisEm: r.sitfisEm, debitos: maed, totalMaed });
+  }
+  out.sort((a, b) => b.totalMaed - a.totalMaed || String(a.empresaNome).localeCompare(String(b.empresaNome)));
+  return out;
+}
 // Cria o card "Débitos na PGFN (Dívida Ativa)" logo ao lado do "DAS Não Pago" (mesma ordem + 1).
 if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'card_pgfn_divida_ativa_20261113'`).get()) {
   for (const r of sqlite.prepare(`SELECT escritorio_id FROM integracontador_config WHERE ativo = 1`).all() as any[]) {
@@ -30072,6 +30097,17 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'card_pgfn_div
       .run("Débitos na PGFN (Dívida Ativa)", "Com débito confirmado — lido da Situação Fiscal (SITFIS)", ref?.cor || "brass", ref ? Number(ref.ordem) + 1 : 0, r.escritorio_id);
   }
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('card_pgfn_divida_ativa_20261113')`);
+}
+// Cria o card "MAED / Multa por Atraso" logo após o card PGFN.
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'card_maed_sief_20261126'`).get()) {
+  for (const r of sqlite.prepare(`SELECT escritorio_id FROM integracontador_config WHERE ativo = 1`).all() as any[]) {
+    if (sqlite.prepare(`SELECT 1 FROM dashboard_cards WHERE escritorio_id = ? AND tipo = 'maed_sief'`).get(r.escritorio_id)) continue;
+    const ref = sqlite.prepare(`SELECT ordem, cor FROM dashboard_cards WHERE escritorio_id = ? AND tipo = 'pgfn_divida_ativa' ORDER BY ordem LIMIT 1`).get(r.escritorio_id) as any;
+    sqlite
+      .prepare(`INSERT INTO dashboard_cards (titulo, valor, subtitulo, cor, ordem, escritorio_id, tipo) VALUES (?, '0', ?, ?, ?, ?, 'maed_sief')`)
+      .run("MAED — Multa por Atraso", "Empresas com multa MAED (PGDAS-D) lida da Situação Fiscal", ref?.cor || "brass", ref ? Number(ref.ordem) + 1 : 0, r.escritorio_id);
+  }
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('card_maed_sief_20261126')`);
 }
 // Modelo "Venda de Licença de Modulo NFS-e" foi criado em branco (só o título padrão) e o contrato gerado
 // dele saiu com o PDF vazio. Preenche o modelo com o texto pronto "Licença de Uso do Módulo NFS-e (SaaS)"
