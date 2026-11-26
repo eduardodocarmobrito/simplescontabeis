@@ -27484,8 +27484,8 @@ async function centralEnvioTodosMontar(box){
 
   function renderHistorico(lista){
     if(!lista.length) return `<div class="empty-state" style="margin-top:16px;">Nenhum comunicado enviado ainda.</div>`;
-    return `<table class="table" style="margin-top:16px;"><thead><tr>
-      <th>Título</th><th>Canais</th><th>Empresas</th><th>Enviados</th><th>Pendentes</th><th>Erros</th><th>Data</th><th></th>
+    return `<table class="data-table" style="margin-top:16px;"><thead><tr>
+      <th>Título</th><th>Canais</th><th>Empresas</th><th>Enviados</th><th>Pendentes</th><th>Erros</th><th>Data</th><th>Status</th><th></th>
     </tr></thead><tbody>${lista.map(c=>{
       const p = c.progresso||{};
       const statusTag = c.status==='cancelado'?`<span class="tag muted">Cancelado</span>`
@@ -27500,10 +27500,49 @@ async function centralEnvioTodosMontar(box){
         <td>${p.pendentes||0}</td>
         <td>${p.erros||0}</td>
         <td style="white-space:nowrap">${c.criado_em?new Date(c.criado_em).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</td>
-        <td>${statusTag}${c.status!=='cancelado'&&p.pendentes>0?` <button class="btn-sm" onclick="cetodosCancelar(${c.id})">Cancelar</button>`:''}</td>
+        <td>${statusTag}</td>
+        <td style="white-space:nowrap">
+          <button class="btn small" onclick="cetodosVerDetalhe(${c.id})">👁 Ver quem recebeu</button>
+          ${c.status!=='cancelado'&&p.pendentes>0?` <button class="btn small danger" onclick="cetodosCancelar(${c.id})">Cancelar</button>`:''}
+        </td>
       </tr>`;
     }).join('')}</tbody></table>`;
   }
+  // Detalhe de um comunicado: pra quem foi (empresa, status, telefone/e-mail usado, quando).
+  window.cetodosVerDetalhe = async function(id){
+    let d;
+    try{ d = await api('/central-envio/comunicados/'+id); }
+    catch(e){ toast(e.message,'err'); return; }
+    const STATUS_INFO = {
+      enviado: { classe:'ok', label:'Enviado' },
+      erro: { classe:'err', label:'Erro' },
+      cancelado: { classe:'muted', label:'Cancelado' },
+      enviando: { classe:'warn', label:'Enviando…' },
+      agendado: { classe:'warn', label:'Agendado' },
+    };
+    const linhas = (d.itens||[]).map(it=>{
+      const info = STATUS_INFO[it.status] || { classe:'muted', label:it.status||'—' };
+      let tel=[], em=[];
+      try{ tel = JSON.parse(it.telefones_json||'[]'); }catch{}
+      try{ em = JSON.parse(it.emails_json||'[]'); }catch{}
+      const destino = [...tel, ...em].join(', ') || '—';
+      return `<tr>
+        <td>${esc(it.empresa_nome)}</td>
+        <td><span class="tag ${info.classe}"${it.erro?` title="${esc(it.erro)}"`:''}>${esc(info.label)}</span></td>
+        <td style="font-size:12.5px;">${esc(destino)}</td>
+        <td style="white-space:nowrap; font-size:12.5px;">${it.executado_em?fmtDateHora(it.executado_em):'—'}</td>
+      </tr>`;
+    }).join('');
+    openModal(`
+      <h3>${esc(d.titulo)}</h3>
+      <p class="muted" style="margin:0 0 14px;">${esc(d.nome_arquivo)} — ${(d.itens||[]).length} empresa${(d.itens||[]).length!==1?'s':''}</p>
+      <div style="max-height:420px; overflow-y:auto;">
+        <table class="data-table"><thead><tr><th>Empresa</th><th>Status</th><th>Destino</th><th>Quando</th></tr></thead>
+        <tbody>${linhas || '<tr><td colspan="4" class="muted">Nenhuma empresa.</td></tr>'}</tbody></table>
+      </div>
+      <div class="modal-actions"><button class="btn" onclick="closeModal()">Fechar</button></div>
+    `, '760px');
+  };
 
   function getFd(){
     const titulo = document.getElementById('cetodosTitulo').value.trim();
