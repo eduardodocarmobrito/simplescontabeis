@@ -3756,15 +3756,18 @@ function cardDetalheModal(c){
     cnd_estadual: { endpoint:'/cnd/estadual/importar', botao:'⬆ Importar Certidão Estadual (PDF)', ajuda:'Importe o PDF da Certidão de Débitos Estaduais da SEFA — a empresa é identificada pelo CNPJ.', sucesso:cndSucesso },
     cnd_municipal: { endpoint:'/cnd/municipal/importar', botao:'⬆ Importar Certidão Municipal (PDF)', ajuda:'Importe o PDF da Certidão de Débitos Municipais (Prefeitura) — a empresa é identificada pelo CNPJ.', sucesso:cndSucesso },
   };
-  const impCfg = (c.tipo && IMPORT_SEFA[c.tipo] && can('dashboard','editar')) ? IMPORT_SEFA[c.tipo] : null;
+  // Botões de ação dos cards (consultar/importar/executar) exigem só "dashboard: visualizar" — quem
+  // já enxerga o card já vê a lista completa de empresas/competências no detalhe, então travar o
+  // botão atrás de "editar" só confundia o Colaborador sem proteger nenhum dado a mais.
+  const impCfg = (c.tipo && IMPORT_SEFA[c.tipo] && can('dashboard','visualizar')) ? IMPORT_SEFA[c.tipo] : null;
   const importavel = !!(c.tipo && IMPORT_SEFA[c.tipo]);
   // Consulta automática: Estadual via Infosimples (~R$0,20/empresa); Municipal via portal da prefeitura (sem custo).
-  const consultaEsfera = ((c.tipo==='cnd_estadual' || c.tipo==='cnd_municipal') && can('dashboard','editar')) ? c.tipo.replace('cnd_','') : null;
+  const consultaEsfera = ((c.tipo==='cnd_estadual' || c.tipo==='cnd_municipal') && can('dashboard','visualizar')) ? c.tipo.replace('cnd_','') : null;
   // Consulta avulsa da Caixa Postal do e-CAC — não espera a busca semanal do Integra Contador, só
   // esse serviço pra todas as empresas habilitadas (sem disparar DAS/DCTF-Web/Situação Fiscal junto).
-  const consultaCaixaPostal = c.tipo==='caixapostal_nao_lida' && can('dashboard','editar');
-  const execDasNaoPago = c.tipo==='das_nao_pago' && can('dashboard','editar');
-  const execPgfnDivida = c.tipo==='pgfn_divida_ativa' && can('dashboard','editar');
+  const consultaCaixaPostal = c.tipo==='caixapostal_nao_lida' && can('dashboard','visualizar');
+  const execDasNaoPago = c.tipo==='das_nao_pago' && can('dashboard','visualizar');
+  const execPgfnDivida = c.tipo==='pgfn_divida_ativa' && can('dashboard','visualizar');
   openModal(`
     <h3>${esc(c.titulo)}</h3>
     ${impCfg? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
@@ -3957,7 +3960,7 @@ function cardDetalheModal(c){
           }).join('')}
         </tbody></table>`;
       } else if(tipo==='das_atraso'){
-        const podeDispensar = can('dashboard','editar');
+        const podeDispensar = can('dashboard','visualizar');
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Competências em aberto</th></tr></thead><tbody>
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${i.competencias.map(comp=>`<span class="tag" style="margin:2px 6px 2px 0; display:inline-block;">${esc(comp)}${podeDispensar?` <a href="#" class="das-disp" data-emp="${i.empresaId}" data-comp="${esc(comp)}" title="Dispensar — entregue sem movimento (sem DAS a pagar)" style="text-decoration:none; color:var(--debit); font-weight:700; margin-left:4px;">✕</a>`:''}</span>`).join('')}</td></tr>`).join('')}
         </tbody></table>${podeDispensar?'<div style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">Clique no <b>✕</b> de uma competência pra <b>dispensar</b> — use só quando ela foi entregue <b>sem movimento</b> (sem DAS a pagar).</div>':''}`;
@@ -3999,7 +4002,7 @@ function cardDetalheModal(c){
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.alerta)}</td><td style="text-align:right;">${i.docId?`<a class="btn small" href="/api/integracontador/documentos/${i.docId}/pdf" target="_blank" rel="noopener">Baixar Situação Fiscal</a>`:''}</td></tr>`).join('')}
         </tbody></table>`;
       } else if(tipo==='caixapostal_nao_lida'){
-        const podeVisto = can('dashboard','editar');
+        const podeVisto = can('dashboard','visualizar');
         const regHtml = r => `<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
             <span class="tag warn" title="Aviso da Caixa de Mensagens do REGULARIZE (PGFN), recebido no e-mail do escritório">Regularize · PGFN</span>
             <span>${r.quantidade} aviso${r.quantidade>1?'s':''} novo${r.quantidade>1?'s':''} — último em ${fmtDateHora(r.ultimoEm)}${r.cadastrada?'':` <span class="mut">(${esc(r.documento||'')} não cadastrado)</span>`}</span>
@@ -4052,7 +4055,7 @@ function cardDetalheModal(c){
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.alerta)}</td></tr>`).join('')}
         </tbody></table>`;
       } else if(tipo==='efd_omisso'){
-        const podeLimpar = can('dashboard','editar');
+        const podeLimpar = can('dashboard','visualizar');
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Insc. Estadual</th><th>Competências omissas</th><th>Importado</th>${podeLimpar?'<th></th>':''}</tr></thead><tbody>
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.inscricao||'—')}</td><td>${i.competencias.map(comp=>`<span class="tag bad" style="margin:2px 6px 2px 0; display:inline-block;">${esc(comp)}</span>`).join('')}</td><td style="font-size:12px; color:var(--ink-soft);">${i.importadoEm?fmtDateHora(i.importadoEm):'—'}</td>${podeLimpar?`<td style="text-align:right;"><a href="#" class="efd-limpar" data-emp="${i.empresaId}" data-nome="${esc(i.empresaNome)}" title="Remover da lista — a empresa regularizou o EFD" style="text-decoration:none; color:var(--debit); font-weight:700;">✕</a></td>`:''}</tr>`).join('')}
         </tbody></table>${podeLimpar?'<div style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">Clique no <b>✕</b> quando a empresa regularizar — ou apenas reimporte a Consulta SEFA atualizada (ela substitui a lista da empresa).</div>':''}`;

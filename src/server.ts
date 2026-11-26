@@ -16296,7 +16296,10 @@ function efdOmissoProcessarTexto(escritorioId: number, texto: string): { empresa
   return { empresaId: empresa.id, empresaNome: empresa.nome, competencias: parsed.itens.length };
 }
 const uploadEfdOmisso = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
-app.post("/api/efd-omisso/importar", blockCliente, requirePermissao("dashboard", "editar"), uploadEfdOmisso.single("arquivo"), async (req, res) => {
+// Só blockCliente+visualizar (não "editar") — quem já enxerga o card no Início ("dashboard:
+// visualizar") já vê a lista completa de empresas/competências via GET .../detalhe; travar os
+// botões de ação atrás de "editar" só confundia o Colaborador sem proteger nenhum dado a mais.
+app.post("/api/efd-omisso/importar", blockCliente, requirePermissao("dashboard", "visualizar"), uploadEfdOmisso.single("arquivo"), async (req, res) => {
   const user = (req as any).user;
   if (!req.file) return res.status(400).json({ error: "Selecione o PDF da Consulta de Débitos da SEFA." });
   let texto = "";
@@ -16307,7 +16310,7 @@ app.post("/api/efd-omisso/importar", blockCliente, requirePermissao("dashboard",
     res.json({ ok: true, empresaNome: r.empresaNome, competencias: r.competencias });
   } catch (e: any) { res.status(e.status || 500).json({ error: e.message }); }
 });
-app.post("/api/efd-omisso/empresa/:id/limpar", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
+app.post("/api/efd-omisso/empresa/:id/limpar", blockCliente, requirePermissao("dashboard", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.params.id);
   if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
@@ -16413,7 +16416,7 @@ function cndProcessarTexto(escritorioId: number, texto: string, esfera: CndEsfer
   return { empresaId: empresa.id, empresaNome: empresa.nome, tipo: p.tipo, validadeIso: p.validadeIso };
 }
 const uploadCnd = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
-app.post("/api/cnd/:esfera/importar", blockCliente, requirePermissao("dashboard", "editar"), uploadCnd.single("arquivo"), async (req, res) => {
+app.post("/api/cnd/:esfera/importar", blockCliente, requirePermissao("dashboard", "visualizar"), uploadCnd.single("arquivo"), async (req, res) => {
   const user = (req as any).user;
   const esfera = cndEsferaValida(req.params.esfera);
   if (!esfera) return res.status(400).json({ error: "Esfera inválida." });
@@ -16812,7 +16815,7 @@ app.delete("/api/cofre-senhas/:id", blockCliente, requireAdmin, (req, res) => {
 });
 // Dispara a consulta das empresas da esfera agora (manual). ?devidas=1 consulta só as vencidas/ausentes.
 // Estadual = Infosimples (pago); Municipal = portal de Redenção via Playwright (sem custo).
-app.post("/api/cnd/:esfera/consultar", blockCliente, requirePermissao("dashboard", "editar"), async (req, res) => {
+app.post("/api/cnd/:esfera/consultar", blockCliente, requirePermissao("dashboard", "visualizar"), async (req, res) => {
   const user = (req as any).user;
   const esfera = cndEsferaValida(req.params.esfera);
   const somenteDevidas = String(req.query.devidas || "") === "1";
@@ -19001,7 +19004,7 @@ async function integraContadorConsultarCaixaPostalTodas(escritorioId: number): P
   console.log(`[Integra Contador] Caixa Postal avulsa: ${ok}/${empresas.length} empresas${erros.length ? `, ${erros.length} com erro (${erros.slice(0, 3).map((e) => e.empresa).join(", ")}${erros.length > 3 ? "…" : ""})` : ""}`);
   return resultado;
 }
-app.post("/api/integracontador/caixapostal/consultar", blockCliente, requirePermissao("dashboard", "editar"), async (req, res) => {
+app.post("/api/integracontador/caixapostal/consultar", blockCliente, requirePermissao("dashboard", "visualizar"), async (req, res) => {
   const user = (req as any).user;
   if (integraContadorCaixaPostalEmAndamento.has(user.escritorioId)) return res.status(409).json({ error: "Já existe uma consulta em andamento." });
   integraContadorCaixaPostalEmAndamento.add(user.escritorioId);
@@ -26069,7 +26072,7 @@ function regularizePendentes(user: any): any[] {
   }
   return [...grupos.values()];
 }
-app.post("/api/regularize/consultar", blockCliente, requirePermissao("dashboard", "editar"), async (req, res) => {
+app.post("/api/regularize/consultar", blockCliente, requirePermissao("dashboard", "visualizar"), async (req, res) => {
   try {
     res.json(await regularizeSincronizar((req as any).user.escritorioId));
   } catch (e: any) {
@@ -26077,7 +26080,7 @@ app.post("/api/regularize/consultar", blockCliente, requirePermissao("dashboard"
   }
 });
 // Marca como visto todos os avisos pendentes de uma empresa (ou de um documento não cadastrado).
-app.post("/api/regularize/visto", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
+app.post("/api/regularize/visto", blockCliente, requirePermissao("dashboard", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.body?.empresaId) || null;
   const documento = req.body?.documento ? soDigitos(req.body.documento) : null;
@@ -26449,7 +26452,7 @@ function dashDasCompetencia(v: any): string | null {
   m = /^(20\d{2})(0[1-9]|1[0-2])$/.exec(s); // AAAAMM
   return m ? s : null;
 }
-app.post("/api/dashboard/das-dispensa", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
+app.post("/api/dashboard/das-dispensa", blockCliente, requirePermissao("dashboard", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.body?.empresaId);
   const competencia = dashDasCompetencia(req.body?.competencia);
@@ -26460,7 +26463,7 @@ app.post("/api/dashboard/das-dispensa", blockCliente, requirePermissao("dashboar
     .run(user.escritorioId, empresaId, competencia, user.id);
   res.json({ ok: true });
 });
-app.delete("/api/dashboard/das-dispensa", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
+app.delete("/api/dashboard/das-dispensa", blockCliente, requirePermissao("dashboard", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.body?.empresaId);
   const competencia = dashDasCompetencia(req.body?.competencia);
@@ -29908,7 +29911,7 @@ function dasPagamentoAgendador() {
 }
 setInterval(dasPagamentoAgendador, 30 * 60_000);
 // "Executar agora" (card DAS Não Pago): roda a verificação de TODAS as empresas em segundo plano.
-app.post("/api/dashboard/das-nao-pago/executar", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
+app.post("/api/dashboard/das-nao-pago/executar", blockCliente, requirePermissao("dashboard", "visualizar"), (req, res) => {
   if (dasPagamentoProgresso.rodando) return res.status(409).json({ error: "A verificação já está em andamento." });
   void dasPagamentoVerificarTodas("manual");
   res.json({ ok: true, progresso: dasPagamentoProgresso });
@@ -30010,7 +30013,7 @@ async function pgfnDividaAtivaVerificarTodas(escritorioId: number) {
     pgfnDividaAtivaProgresso.rodando = false;
   }
 }
-app.post("/api/dashboard/pgfn-divida-ativa/executar", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
+app.post("/api/dashboard/pgfn-divida-ativa/executar", blockCliente, requirePermissao("dashboard", "visualizar"), (req, res) => {
   if (pgfnDividaAtivaProgresso.rodando) return res.status(409).json({ error: "Já está em andamento." });
   void pgfnDividaAtivaVerificarTodas((req as any).user.escritorioId);
   res.json({ ok: true, progresso: pgfnDividaAtivaProgresso });
