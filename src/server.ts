@@ -31,6 +31,7 @@ import * as danfse from "./danfse";
 import * as whatsapp from "./whatsapp";
 import * as nfe from "./nfe";
 import * as cndRedencao from "./cnd-redencao";
+import * as licencasRedencao from "./licencas-redencao";
 import * as nfePdf from "./nfe-pdf";
 import * as ofx from "./ofx";
 import * as openFinance from "./open-finance";
@@ -16913,6 +16914,178 @@ setInterval(() => {
     })();
   }
 }, 12 * 60 * 60 * 1000);
+
+// ---------- Alvará / Licença Sanitária: Prefeitura de Redenção-PA (portal "Empresa Digital") ----------
+// Diferente da CND (consulta pública por CNPJ), aqui o login é com CNPJ+senha DA PRÓPRIA EMPRESA —
+// por isso a senha fica cadastrada por empresa (cifrada, igual certificado digital/outras credenciais
+// de terceiro já guardadas no sistema), não é um acesso único do escritório. Pedido do usuário
+// (2026-11-26): ao achar uma licença Vigente nova/renovada, anexa sozinho na aba Licenças já
+// existente da empresa (mesmas tabelas/card de "Licenças a Vencer" — zero mudança de schema/UI ali,
+// só inserir a linha nova já resolve, ver achado em auditoria dessa mesma data).
+if (!(sqlite.prepare(`PRAGMA table_info(empresa_anexos)`).all() as any[]).some((c: any) => c.name === "processo_externo")) {
+  sqlite.exec(`ALTER TABLE empresa_anexos ADD COLUMN processo_externo TEXT`); // nº do processo da prefeitura — dedupe: só baixa de novo quando muda
+}
+sqlite.exec(`CREATE TABLE IF NOT EXISTS empresa_licenca_redencao_config (
+  empresa_id INTEGER PRIMARY KEY REFERENCES empresas(id) ON DELETE CASCADE,
+  cnpj_login TEXT NOT NULL,
+  senha_cifrada TEXT NOT NULL,
+  ativo INTEGER NOT NULL DEFAULT 1,
+  ultima_consulta_em TEXT,
+  ultimo_erro TEXT,
+  updated_at TEXT DEFAULT (datetime('now'))
+)`);
+function licencaRedencaoUltimoProcesso(empresaId: number, tipo: string): string | null {
+  const row = sqlite
+    .prepare(`SELECT processo_externo FROM empresa_anexos WHERE empresa_id = ? AND tipo = ? AND processo_externo IS NOT NULL ORDER BY criado_em DESC LIMIT 1`)
+    .get(empresaId, tipo) as any;
+  return row?.processo_externo || null;
+}
+// "Alvará de Funcionamento - 2023" / "Alvará de Funcionamento" / "Licença Sanitária - Qualquer
+// outro estabelecimento..." — o nome completo varia (ano, tipo de estabelecimento), só o prefixo é estável.
+function licencaRedencaoTipoDoNome(nome: string): "alvara" | "vigilancia_sanitaria" | null {
+  if (/^Alvar[áa] de Funcionamento/i.test(nome)) return "alvara";
+  if (/^Licen[çc]a Sanit[áa]ria/i.test(nome)) return "vigilancia_sanitaria";
+  return null;
+}
+async function licencaRedencaoConsultarEmpresa(
+  escritorioId: number,
+  empresa: { id: number; nome: string },
+  cnpjLogin: string,
+  senha: string,
+  browser?: any
+): Promise<{ ok: boolean; novos: number; erro?: string }> {
+  let novos = 0;
+  try {
+    const conhecidos = new Map<string, string | null>([
+      ["alvara", licencaRedencaoUltimoProcesso(empresa.id, "alvara")],
+      ["vigilancia_sanitaria", licencaRedencaoUltimoProcesso(empresa.id, "vigilancia_sanitaria")],
+    ]);
+    const { itens } = await licencasRedencao.consultarLicencasRedencao(cnpjLogin, senha, {
+      browserExterno: browser,
+      baixar: (item) => {
+        if (item.status !== "vigente") return false;
+        const tipo = licencaRedencaoTipoDoNome(item.nome);
+        return !!tipo && conhecidos.get(tipo) !== item.processo;
+      },
+    });
+    for (const item of itens) {
+      if (!item.pdfBase64) continue;
+      const tipo = licencaRedencaoTipoDoNome(item.nome);
+      if (!tipo) continue;
+      const buf = Buffer.from(item.pdfBase64, "base64");
+      const vencimento = await extrairVencimentoDeAnexo(buf, "application/pdf");
+      const ano = vencimento ? Number(vencimento.slice(0, 4)) : new Date().getFullYear();
+      sqlite.prepare(`INSERT OR IGNORE INTO empresa_licenca_anos (escritorio_id, ano) VALUES (?, ?)`).run(escritorioId, ano);
+      const nomeArquivo = `${tipo === "alvara" ? "Alvará de Funcionamento" : "Licença Sanitária"} — ${item.processo}.pdf`;
+      const dir = path.join(UPLOADS_DIR, "empresa-anexos", String(empresa.id));
+      fs.mkdirSync(dir, { recursive: true });
+      const destino = path.join(dir, `${Date.now()}-${nomeArquivo}`);
+      fs.writeFileSync(destino, buf);
+      sqlite
+        .prepare(
+          `INSERT INTO empresa_anexos (empresa_id, categoria, tipo, ano, nome_arquivo, arquivo_path, mime, size_bytes, vencimento, vencimento_origem, processo_externo)
+           VALUES (?, 'licenca', ?, ?, ?, ?, 'application/pdf', ?, ?, ?, ?)`
+        )
+        .run(empresa.id, tipo, ano, nomeArquivo, destino, buf.length, vencimento, vencimento ? "automatico" : null, item.processo);
+      novos++;
+    }
+    sqlite.prepare(`UPDATE empresa_licenca_redencao_config SET ultima_consulta_em = datetime('now'), ultimo_erro = NULL WHERE empresa_id = ?`).run(empresa.id);
+    return { ok: true, novos };
+  } catch (e: any) {
+    sqlite.prepare(`UPDATE empresa_licenca_redencao_config SET ultima_consulta_em = datetime('now'), ultimo_erro = ? WHERE empresa_id = ?`).run(e.message, empresa.id);
+    return { ok: false, novos: 0, erro: e.message };
+  }
+}
+async function licencaRedencaoConsultarTodas(escritorioId: number): Promise<{ total: number; ok: number; novos: number; erros: { empresa: string; erro: string }[] }> {
+  const configs = sqlite
+    .prepare(
+      `SELECT c.empresa_id as empresaId, c.cnpj_login as cnpjLogin, c.senha_cifrada as senhaCifrada, e.nome
+       FROM empresa_licenca_redencao_config c JOIN empresas e ON e.id = c.empresa_id
+       WHERE c.ativo = 1 AND e.escritorio_id = ? AND e.ativo = 1`
+    )
+    .all(escritorioId) as any[];
+  let ok = 0, novos = 0;
+  const erros: { empresa: string; erro: string }[] = [];
+  // Mesmo cuidado do CND municipal: relança o navegador a cada poucas empresas (memória do Chromium).
+  let browser: any = null;
+  const RELANCA_A_CADA = 6;
+  const novoBrowser = async () => { try { if (browser) await browser.close().catch(() => {}); } catch { /* ignora */ } browser = await licencasRedencao.abrirNavegadorRedencao(); };
+  try {
+    let i = 0;
+    for (const c of configs) {
+      if (!browser || i % RELANCA_A_CADA === 0 || !browser.isConnected?.()) await novoBrowser();
+      i++;
+      let senha: string;
+      try { senha = nfse.decifrarTexto(c.senhaCifrada); } catch { erros.push({ empresa: c.nome, erro: "Senha salva corrompida — cadastre novamente." }); continue; }
+      let r: { ok: boolean; novos: number; erro?: string };
+      try { r = await licencaRedencaoConsultarEmpresa(escritorioId, { id: c.empresaId, nome: c.nome }, c.cnpjLogin, senha, browser); }
+      catch (e: any) { r = { ok: false, novos: 0, erro: e.message }; await novoBrowser().catch(() => {}); }
+      if (r.ok) { ok++; novos += r.novos; } else erros.push({ empresa: c.nome, erro: r.erro || "erro" });
+    }
+  } finally { if (browser) await browser.close().catch(() => {}); }
+  return { total: configs.length, ok, novos, erros };
+}
+app.get("/api/empresas/:id/licenca-redencao", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const row = sqlite
+    .prepare(`SELECT cnpj_login as cnpjLogin, ativo, ultima_consulta_em as ultimaConsultaEm, ultimo_erro as ultimoErro FROM empresa_licenca_redencao_config WHERE empresa_id = ?`)
+    .get(empresaId) as any;
+  res.json({ configurado: !!row, cnpjLogin: row?.cnpjLogin || null, ativo: row ? !!row.ativo : false, ultimaConsultaEm: row?.ultimaConsultaEm || null, ultimoErro: row?.ultimoErro || null });
+});
+app.post("/api/empresas/:id/licenca-redencao", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const cnpjLogin = String(req.body?.cnpjLogin || "").replace(/\D/g, "");
+  const senha = String(req.body?.senha || "");
+  if (cnpjLogin.length !== 14) return res.status(400).json({ error: "Informe um CNPJ válido (14 dígitos)." });
+  if (!senha) return res.status(400).json({ error: "Informe a senha de acesso ao portal." });
+  sqlite
+    .prepare(
+      `INSERT INTO empresa_licenca_redencao_config (empresa_id, cnpj_login, senha_cifrada, ativo, updated_at) VALUES (?, ?, ?, 1, datetime('now'))
+       ON CONFLICT(empresa_id) DO UPDATE SET cnpj_login=excluded.cnpj_login, senha_cifrada=excluded.senha_cifrada, ativo=1, ultimo_erro=NULL, updated_at=datetime('now')`
+    )
+    .run(empresaId, cnpjLogin, nfse.cifrarTexto(senha));
+  res.json({ ok: true });
+});
+app.delete("/api/empresas/:id/licenca-redencao", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  sqlite.prepare(`DELETE FROM empresa_licenca_redencao_config WHERE empresa_id = ?`).run(empresaId);
+  res.json({ ok: true });
+});
+app.post("/api/empresas/:id/licenca-redencao/consultar", blockCliente, requirePermissao("empresas", "editar"), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const cfg = sqlite.prepare(`SELECT * FROM empresa_licenca_redencao_config WHERE empresa_id = ?`).get(empresaId) as any;
+  if (!cfg) return res.status(400).json({ error: "Cadastre o CNPJ e a senha de acesso antes de consultar." });
+  const empresa = sqlite.prepare(`SELECT id, nome FROM empresas WHERE id = ?`).get(empresaId) as any;
+  let senha: string;
+  try { senha = nfse.decifrarTexto(cfg.senha_cifrada); }
+  catch { return res.status(500).json({ error: "Falha ao decifrar a senha salva — cadastre novamente." }); }
+  const r = await licencaRedencaoConsultarEmpresa(user.escritorioId, empresa, cfg.cnpj_login, senha);
+  if (!r.ok) return res.status(400).json({ error: r.erro || "Falha na consulta." });
+  res.json({ ok: true, novos: r.novos });
+});
+// Agendador: 2x/dia (mesma cadência do CND municipal), só pras empresas com credencial cadastrada e ativa.
+setInterval(() => {
+  const escritorios = sqlite
+    .prepare(`SELECT DISTINCT e.escritorio_id as id FROM empresa_licenca_redencao_config c JOIN empresas e ON e.id = c.empresa_id WHERE c.ativo = 1`)
+    .all() as any[];
+  for (const esc of escritorios) {
+    (async () => {
+      try {
+        const r = await licencaRedencaoConsultarTodas(esc.id);
+        if (r.total) console.log(`[licencas redencao] ${r.ok}/${r.total} empresa(s), ${r.novos} licença(s) nova(s)`);
+      } catch (e: any) { console.error("[licencas redencao]", e.message); }
+    })();
+  }
+}, 12 * 60 * 60 * 1000);
+
 // Envia o PDF (ajustado) de Entradas/Saídas pros contatos da empresa (e-mail + WhatsApp). Mesma mecânica
 // do envio de Programação de Férias (ver enviarRelatorioEmpresa em ferias.ts).
 async function entradasSaidasEnviarEmpresa(escritorioId: number, empresaId: number, canal: any): Promise<{ ok: boolean; erro?: string }> {

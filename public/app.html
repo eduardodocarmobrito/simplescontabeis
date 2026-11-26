@@ -5235,6 +5235,18 @@ function empresaModal(e){
     </div>
     <div id="empTabLicencas" class="hidden">
       <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 10px; max-width:760px;">Alvará, Vigilância Sanitária, Corpo de Bombeiros, Ambiental (SEMMA) e outras licenças que você cadastrar, organizadas por ano — escolha o ano, depois a licença, pra ver o histórico e anexar. Use "+ Outra licença" pra criar um tipo novo (fica disponível só pra esta empresa). O vencimento é sempre lido do anexo em si (PDF), nunca herdado de outro ano.</p>
+      <div class="card" id="empLicRedBox" style="background:var(--paper); padding:14px; margin-bottom:14px;">
+        <div style="font-weight:600; font-size:13px; margin-bottom:8px;">🏛 Consulta automática — Prefeitura de Redenção-PA</div>
+        <p style="font-size:12px; color:var(--ink-soft); margin:0 0 10px;">Cadastre o CNPJ e a senha de acesso da empresa ao portal "Empresa Digital" da prefeitura — o sistema confere Alvará e Licença Sanitária sozinho (2x/dia) e já anexa aqui quando achar uma licença renovada.</p>
+        <div class="row" style="gap:12px; flex-wrap:wrap; align-items:flex-end;">
+          <div class="field" style="min-width:200px; margin:0;"><label>CNPJ de acesso</label><input type="text" id="empLicRedCnpj" placeholder="00.000.000/0000-00"></div>
+          <div class="field" style="min-width:200px; margin:0;"><label>Senha</label><input type="password" id="empLicRedSenha" placeholder="senha de acesso ao portal"></div>
+          <button class="btn small" id="empLicRedSalvar">Salvar</button>
+          <button class="btn small" id="empLicRedConsultar">🔄 Consultar agora</button>
+          <button class="btn small danger" id="empLicRedRemover" style="display:none;">Remover</button>
+        </div>
+        <div id="empLicRedStatus" style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;"></div>
+      </div>
       <div class="tabs" id="empLicencasAnos"></div>
       <div id="empLicencasTipos" style="margin-top:12px;"></div>
     </div>
@@ -5777,6 +5789,78 @@ function ligarAbaLicencasEmpresa(empresaId){
     renderTipos();
   }
   carregarTudo();
+  ligarLicencaRedencao(empresaId, carregarTudo);
+}
+// Consulta automática de Alvará/Licença Sanitária na Prefeitura de Redenção-PA — bloco no topo da
+// aba Licenças. Cadastra CNPJ+senha de acesso ao portal "Empresa Digital" (fica cifrada no banco,
+// nunca volta pro front depois de salva) e permite disparar uma consulta na hora; a rotina
+// automática (2x/dia, servidor) usa a mesma credencial sem precisar clicar em nada.
+async function ligarLicencaRedencao(empresaId, aoAtualizarAnexos){
+  const podeEditar = can('empresas','editar');
+  const cnpjEl = document.getElementById('empLicRedCnpj');
+  const senhaEl = document.getElementById('empLicRedSenha');
+  const statusEl = document.getElementById('empLicRedStatus');
+  const btnSalvar = document.getElementById('empLicRedSalvar');
+  const btnConsultar = document.getElementById('empLicRedConsultar');
+  const btnRemover = document.getElementById('empLicRedRemover');
+  if(!podeEditar){ cnpjEl.disabled = true; senhaEl.disabled = true; btnSalvar.disabled = true; }
+  function fmtStatus(cfg){
+    if(!cfg.configurado) return 'Ainda não configurado.';
+    const partes = [];
+    if(cfg.ultimaConsultaEm) partes.push('última consulta: '+fmtDateHora(cfg.ultimaConsultaEm));
+    else partes.push('ainda não consultado — clique em "Consultar agora".');
+    if(cfg.ultimoErro) partes.push('erro na última vez: '+cfg.ultimoErro);
+    return partes.join(' — ');
+  }
+  let cfgAtual;
+  try{
+    cfgAtual = await api('/empresas/'+empresaId+'/licenca-redencao');
+    if(cfgAtual.configurado){
+      cnpjEl.value = cfgAtual.cnpjLogin || '';
+      senhaEl.placeholder = '•••• configurada — cole pra trocar';
+      btnRemover.style.display = '';
+    }
+    statusEl.textContent = fmtStatus(cfgAtual);
+    statusEl.style.color = cfgAtual.ultimoErro ? 'var(--debit)' : 'var(--ink-soft)';
+  }catch(err){ statusEl.textContent = err.message; statusEl.style.color = 'var(--debit)'; }
+  btnSalvar.addEventListener('click', async ()=>{
+    const cnpjLogin = cnpjEl.value.trim();
+    const senha = senhaEl.value;
+    if(!cnpjLogin){ toast('Informe o CNPJ de acesso.','err'); return; }
+    if(!senha){ toast('Informe a senha.','err'); return; }
+    btnSalvar.disabled = true; btnSalvar.textContent = 'Salvando…';
+    try{
+      await api('/empresas/'+empresaId+'/licenca-redencao', { method:'POST', body:{ cnpjLogin, senha } });
+      senhaEl.value = '';
+      senhaEl.placeholder = '•••• configurada — cole pra trocar';
+      btnRemover.style.display = '';
+      statusEl.style.color = 'var(--ink-soft)';
+      statusEl.textContent = 'Credencial salva — ainda não consultado. Clique em "Consultar agora" ou aguarde a rotina automática (2x/dia).';
+      toast('Credencial salva.','ok');
+    }catch(err){ toast(err.message,'err'); }
+    finally{ btnSalvar.disabled = false; btnSalvar.textContent = 'Salvar'; }
+  });
+  btnConsultar.addEventListener('click', async ()=>{
+    btnConsultar.disabled = true; const txt0 = btnConsultar.textContent; btnConsultar.textContent = 'Consultando…';
+    statusEl.style.color = 'var(--ink-soft)'; statusEl.textContent = 'Entrando no portal da prefeitura — pode levar até 1 minuto…';
+    try{
+      const r = await api('/empresas/'+empresaId+'/licenca-redencao/consultar', { method:'POST' });
+      statusEl.style.color = 'var(--credit)';
+      statusEl.textContent = r.novos ? `${r.novos} licença(s) nova(s) anexada(s) abaixo.` : 'Consultado — nenhuma licença nova (o que já está anexado continua o mais recente).';
+      if(r.novos) await aoAtualizarAnexos();
+    }catch(err){ statusEl.style.color = 'var(--debit)'; statusEl.textContent = err.message; }
+    finally{ btnConsultar.disabled = false; btnConsultar.textContent = txt0; }
+  });
+  btnRemover.addEventListener('click', async ()=>{
+    if(!confirmar('Remover a credencial salva? A consulta automática para de rodar pra esta empresa.')) return;
+    try{
+      await api('/empresas/'+empresaId+'/licenca-redencao', { method:'DELETE' });
+      cnpjEl.value = ''; senhaEl.value = ''; senhaEl.placeholder = 'senha de acesso ao portal';
+      btnRemover.style.display = 'none';
+      statusEl.style.color = 'var(--ink-soft)'; statusEl.textContent = 'Ainda não configurado.';
+      toast('Credencial removida.','ok');
+    }catch(err){ toast(err.message,'err'); }
+  });
 }
 // ===================== Licenças (carga em lote por pasta) =====================
 // Escolhe uma pasta inteira de PDFs (o navegador junta tudo o que tem lá dentro num FileList só,
