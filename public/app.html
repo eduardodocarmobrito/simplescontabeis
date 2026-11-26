@@ -6995,13 +6995,24 @@ async function renderEnvioModelos(){
       <td>${t.accept.map(a=>`<span class="tag muted">${esc(a)}</span>`).join(' ')}</td>
       <td><span class="tag ${t.detectarVencimento?'ok':'muted'}">${t.detectarVencimento?'Detecta':'Não se aplica'}</span></td>
       <td><span class="tag ${t.visivelCliente?'ok':'muted'}">${t.visivelCliente?'Sim':'Não'}</span></td>
-      <td style="text-align:right;">${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''}</td>
+      <td style="text-align:right; white-space:nowrap; display:flex; gap:6px; justify-content:flex-end;">${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''} ${podeEditar&&!t.protegido?`<button class="btn small danger" data-act="del">Excluir</button>`:''}</td>
     </tr>
   `).join('') : `<tr><td colspan="6"><div class="empty-state">${items.length?'Nenhum modelo encontrado com esse filtro.':'Nenhum modelo cadastrado ainda.'}</div></td></tr>`;
-    if(podeEditar) document.getElementById('envioModelosBody').querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
-      const id=Number(e.target.closest('tr').dataset.id);
-      envioModeloModal(items.find(x=>x.id===id));
-    }));
+    if(podeEditar){
+      document.getElementById('envioModelosBody').querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
+        const id=Number(e.target.closest('tr').dataset.id);
+        envioModeloModal(items.find(x=>x.id===id));
+      }));
+      document.getElementById('envioModelosBody').querySelectorAll('[data-act="del"]').forEach(b=>b.addEventListener('click', async e=>{
+        const tr=e.target.closest('tr'), id=Number(tr.dataset.id), t=items.find(x=>x.id===id);
+        if(!confirm(`Excluir o modelo "${t?.nome}"? Esta ação não pode ser desfeita.`)) return;
+        try{
+          await api('/envio/templates/'+id, {method:'DELETE'});
+          toast('Modelo excluído.','ok');
+          renderEnvioModelos();
+        }catch(err){ toast(err.message,'err'); }
+      }));
+    }
   };
   desenhaModelosEnvio('');
   document.getElementById('envioModeloBusca').addEventListener('input', e=>desenhaModelosEnvio(e.target.value));

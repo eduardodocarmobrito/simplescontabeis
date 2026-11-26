@@ -9952,6 +9952,10 @@ app.delete("/api/envio/templates/:id", requireAdmin, (req, res) => {
   if (ENVIO_TEMPLATES_PROTEGIDOS.includes(existing.nome)) {
     return res.status(409).json({ error: `"${existing.nome}" é usado automaticamente pelo Integra Contador e não pode ser excluído.` });
   }
+  const emUso = sqlite.prepare(`SELECT COUNT(*) as n FROM envio_atribuicoes WHERE template_id = ? AND ativo = 1`).get(Number(req.params.id)) as any;
+  if (emUso.n > 0) {
+    return res.status(409).json({ error: `Este modelo ainda está atribuído a ${emUso.n} empresa(s). Remova todas as atribuições antes de excluir.` });
+  }
   sqlite.prepare(`DELETE FROM envio_templates WHERE id = ? AND escritorio_id = ?`).run(Number(req.params.id), (req as any).user.escritorioId);
   // Limpa referências órfãs em empresa_solicitacao_tipos (chave 'template:<id>' desse modelo excluído).
   sqlite.prepare(`DELETE FROM empresa_solicitacao_tipos WHERE chave = ?`).run("template:" + req.params.id);
