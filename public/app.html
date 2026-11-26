@@ -27336,11 +27336,8 @@ async function renderCfgEmailSmtp(box){
         </div>
         <div style="font-weight:600; font-size:12.5px; margin:0 0 6px; padding-top:12px; border-top:1px dashed var(--rule);">Remetente do WhatsApp</div>
         <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:6px;">De qual número as notas saem pra este cliente.</div>
-        <div class="row" style="gap:10px; align-items:center; flex-wrap:wrap;">
-          <select id="ccWaMode" style="max-width:280px;">
-            <option value="escritorio" ${waProprio.mode!=='proprio'?'selected':''}>Número do escritório (padrão)</option>
-            <option value="proprio" ${waProprio.mode==='proprio'?'selected':''}>Número do próprio cliente (conectar por QR)</option>
-          </select>
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <div class="field" style="margin:0; min-width:260px; max-width:340px;"><label>Canal</label>${comboSelectHtml('ccWaMode','Selecione…')}</div>
           <span id="ccWaStatus" style="font-size:11.5px;"></span>
         </div>
         <div id="ccWaProprioBox" style="margin-top:8px; ${waProprio.mode==='proprio'?'':'display:none;'}">
@@ -27379,17 +27376,27 @@ async function renderCfgEmailSmtp(box){
     const ccWaStatusEl = document.getElementById('ccWaStatus');
     const pintarWaStatus = ()=>{
       const st = waProprio.status, nm = waProprio.numero;
-      ccWaStatusEl.innerHTML = (document.getElementById('ccWaMode').value==='proprio')
+      const mode = document.getElementById('ccWaMode').querySelector('.combo-value').value;
+      ccWaStatusEl.innerHTML = (mode==='proprio')
         ? (st==='conectado'? `<span class="tag ok">Conectado${nm?' ('+esc(nm)+')':''}</span>` : `<span class="tag muted">Não conectado</span>`)
         : '';
     };
-    pintarWaStatus();
-    document.getElementById('ccWaMode').addEventListener('change', async (e)=>{
-      const mode = e.target.value;
+    const waOpcoes = [
+      {id:'escritorio', label:'Número do escritório (padrão)'},
+      {id:'proprio',    label:'Número do próprio cliente (conectar por QR)'}
+    ];
+    setupComboSelect('ccWaMode', waOpcoes, async (mode)=>{
+      if (!mode) return;
       document.getElementById('ccWaProprioBox').style.display = mode==='proprio'?'':'none';
       try{ await api('/empresas/'+empresaId+'/whatsapp-proprio', { method:'PUT', body:{ mode } }); waProprio.mode=mode; pintarWaStatus(); toast('Remetente do WhatsApp atualizado.','ok'); }
       catch(err){ toast(err.message,'err'); }
     });
+    // Pré-selecionar o modo atual
+    const initWaMode = waProprio.mode==='proprio'?'proprio':'escritorio';
+    const waCombo = document.getElementById('ccWaMode');
+    waCombo.querySelector('.combo-value').value = initWaMode;
+    waCombo.querySelector('.combo-input').value = waOpcoes.find(o=>o.id===initWaMode).label;
+    pintarWaStatus();
     document.getElementById('ccWaConectar').addEventListener('click', async ()=>{
       const box=document.getElementById('ccWaConectarResultado');
       box.innerHTML = '<div class="empty-state" style="padding:8px;">Conectando…</div>';
