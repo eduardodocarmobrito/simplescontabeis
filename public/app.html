@@ -27534,7 +27534,7 @@ async function centralEnvioTodosMontar(box){
         <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
           <strong>Clientes que receberão o comunicado (${empresas.length})</strong>
           <div class="row" style="gap:8px; align-items:center;">
-            <input type="text" id="cetodosBusca" placeholder="Filtrar cliente…" style="width:200px;" autocomplete="off">
+            <div class="field" style="width:200px; margin:0;"><input type="text" id="cetodosBusca" placeholder="Filtrar cliente…" autocomplete="off"></div>
             <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="cetodosSelTodos" checked> Selecionar todos</label>
           </div>
         </div>
@@ -27560,7 +27560,7 @@ async function centralEnvioTodosMontar(box){
       </div>
 
       <div class="row" style="gap:12px; justify-content:flex-end;">
-        <button class="btn-secondary" onclick="pageCrm()">Cancelar</button>
+        <button class="btn" onclick="pageCrm()">Cancelar</button>
         <button class="btn" id="cetodosEnviarBtn">📣 Enviar para todos</button>
       </div>
 
