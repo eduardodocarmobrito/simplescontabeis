@@ -7371,13 +7371,13 @@ function envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencime
       ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.emailEnviado? `✓ Enviado por e-mail ao cliente${d.emailEnviadoEm?' em '+fmtDateHora(d.emailEnviadoEm):''}` : (d.emailErro? '⚠ E-mail não enviado: '+esc(d.emailErro) : '')}</div>` : ''}
       ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.whatsappEnviado? whatsappStatusTexto(d) : (d.whatsappErro? '⚠ WhatsApp não enviado: '+esc(d.whatsappErro) : '')}</div>` : ''}
     </div>
-    <div style="display:flex; gap:6px; flex-wrap:wrap; flex-shrink:0;">
-      <button class="btn small" data-act="baixar-envio" data-doc="${d.id}">Baixar</button>
-      ${podeEditar && mostrarVencimento? `<button class="btn small" data-act="editar-venc" data-doc="${d.id}" data-venc="${d.vencimento||''}">Vencimento</button>`:''}
-      ${!souCliente && podePostar? `<button class="btn small" data-act="reenviar-email" data-doc="${d.id}">${d.emailEnviado?'Reenviar e-mail':'Enviar e-mail'}</button>`:''}
-      ${!souCliente && podePostar? `<button class="btn small" data-act="enviar-whatsapp" data-canal="conversa" data-doc="${d.id}" title="Pelo número de atendimento (conversa com o cliente)">💬 ${d.whatsappEnviado?'Reenviar':'Enviar'} WhatsApp</button>
-      <button class="btn small" data-act="enviar-whatsapp" data-canal="meta" data-doc="${d.id}" title="Pelo número separado da API oficial (Meta)">📱 ${d.whatsappEnviado?'Reenviar':'Enviar'} WhatsApp (Meta)</button>`:''}
-      ${podeEditar? `<button class="btn small danger" data-act="excluir-doc" data-doc="${d.id}">Excluir</button>`:''}
+    <div style="display:grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:6px; align-items:start; white-space:nowrap;">
+      <button class="btn small" style="text-align:center;" data-act="baixar-envio" data-doc="${d.id}">Baixar</button>
+      ${podeEditar && mostrarVencimento? `<button class="btn small" style="text-align:center;" data-act="editar-venc" data-doc="${d.id}" data-venc="${d.vencimento||''}">Vencimento</button>`:''}
+      ${!souCliente && podePostar? `<button class="btn small" style="text-align:center;" data-act="reenviar-email" data-doc="${d.id}">${d.emailEnviado?'Reenviar e-mail':'Enviar e-mail'}</button>`:''}
+      ${!souCliente && podePostar? `<button class="btn small" style="text-align:center;" data-act="enviar-whatsapp" data-canal="conversa" data-doc="${d.id}" title="Pelo número de atendimento (conversa com o cliente)">💬 ${d.whatsappEnviado?'Reenviar':'Enviar'} WhatsApp</button>
+      <button class="btn small" style="text-align:center;" data-act="enviar-whatsapp" data-canal="meta" data-doc="${d.id}" title="Pelo número separado da API oficial (Meta)">📱 ${d.whatsappEnviado?'Reenviar':'Enviar'} WhatsApp (Meta)</button>`:''}
+      ${podeEditar? `<button class="btn small danger" style="text-align:center;" data-act="excluir-doc" data-doc="${d.id}">Excluir</button>`:''}
     </div>
   </div>`;
 }
