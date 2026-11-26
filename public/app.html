@@ -7152,8 +7152,25 @@ async function renderEnvioAtribuicoes(){
       const id = Number(tr.dataset.id);
       const a = atribs.find(x=>x.id===id);
       if(!confirmar(`Excluir "${a.templateNome}" de ${a.empresaNome}?`)) return;
-      try{ await api('/envio/atribuicoes/'+id, { method:'DELETE' }); toast('Excluído.','ok'); renderEnvioAtribuicoes(); }
-      catch(err){ toast(err.message,'err'); }
+      try{
+        await api('/envio/atribuicoes/'+id, { method:'DELETE' });
+        toast('Excluído.','ok'); renderEnvioAtribuicoes();
+      }catch(err){
+        if(err.status===409 && err.data?.podeArquivar){
+          const ok = await new Promise(res=>{
+            openModal(`<h3>Arquivar atribuição?</h3>`
+              +`<p style="font-size:13px;line-height:1.6;">"<b>${esc(a.templateNome)}</b>" de <b>${esc(a.empresaNome)}</b> tem documentos já enviados e não pode ser excluída. Deseja <b>arquivá-la</b>?</p>`
+              +`<p style="font-size:12px;color:var(--muted);">Ela desaparece da grade; o histórico de envios é preservado. Documentos ainda pendentes (não enviados) são descartados.</p>`
+              +`<div class="modal-actions"><button class="btn" id="arquNao">Cancelar</button><button class="btn primary" id="arquSim">Arquivar</button></div>`,'480px');
+            let done=false; const fim=v=>{if(done)return;done=true;closeModal();res(v);};
+            document.getElementById('arquNao').addEventListener('click',()=>fim(false));
+            document.getElementById('arquSim').addEventListener('click',()=>fim(true));
+          });
+          if(!ok) return;
+          try{ await api('/envio/atribuicoes/'+id+'/arquivar',{method:'POST'}); toast('Arquivada.','ok'); renderEnvioAtribuicoes(); }
+          catch(e2){ toast(e2.message,'err'); }
+        } else { toast(err.message,'err'); }
+      }
     }));
   }
   desenhaEnvioAtribs(ENVIO_ATRIB_FILTRO.texto, ENVIO_ATRIB_FILTRO.modeloIds);

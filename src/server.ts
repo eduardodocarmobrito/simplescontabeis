@@ -10280,9 +10280,26 @@ app.delete("/api/envio/atribuicoes/:id", blockCliente, requirePermissao("envio",
   const atrib = sqlite.prepare(`SELECT empresa_id FROM envio_atribuicoes WHERE id = ?`).get(id) as any;
   if (!atrib || !podeAcessarEmpresa((req as any).user, atrib.empresa_id)) return res.status(404).json({ error: "Atribuição não encontrada." });
   if (envioAtribuicaoTemDocumentos(id)) {
-    return res.status(409).json({ error: "Já existe documento enviado nesta atribuição — não é possível excluir." });
+    return res.status(409).json({ error: "Já existe documento enviado nesta atribuição — não é possível excluir.", podeArquivar: true });
   }
   sqlite.prepare(`DELETE FROM envio_atribuicoes WHERE id = ?`).run(id);
+  res.json({ ok: true });
+});
+// Arquiva a atribuição (ativo=0): some da grade mas o histórico de envios é preservado.
+// Documentos ainda não enviados (pendentes) são descartados automaticamente.
+app.post("/api/envio/atribuicoes/:id/arquivar", blockCliente, requirePermissao("envio", "editar"), (req, res) => {
+  const id = Number(req.params.id);
+  const atrib = sqlite.prepare(`SELECT empresa_id FROM envio_atribuicoes WHERE id = ?`).get(id) as any;
+  if (!atrib || !podeAcessarEmpresa((req as any).user, atrib.empresa_id)) return res.status(404).json({ error: "Atribuição não encontrada." });
+  // Descarta documentos pendentes (não enviados) dos períodos desta atribuição
+  const periodos = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ?`).all(id) as any[];
+  if (periodos.length) {
+    const pids = periodos.map((p) => p.id);
+    sqlite.prepare(`DELETE FROM envio_documentos WHERE periodo_id IN (${pids.map(() => "?").join(",")}) AND (email_enviado IS NULL OR email_enviado = 0)`).run(...pids);
+    // Remove períodos sem documentos (histórico)
+    sqlite.prepare(`DELETE FROM envio_periodos WHERE atribuicao_id = ? AND id NOT IN (SELECT DISTINCT periodo_id FROM envio_documentos WHERE periodo_id IS NOT NULL)`).run(id);
+  }
+  sqlite.prepare(`UPDATE envio_atribuicoes SET ativo = 0 WHERE id = ?`).run(id);
   res.json({ ok: true });
 });
 
