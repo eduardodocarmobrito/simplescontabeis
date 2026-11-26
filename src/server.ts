@@ -18478,15 +18478,14 @@ function integraContadorAnexarDarfDctfwebEmEnvio(
   const periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
   const jaTem = !!periodo && envioJaTemDocumento(periodo.id);
   if (!forcarNovoDocumento && jaTem) return; // já enviado uma vez — só reenvia com "Solicitar recálculo"
-  const retificado = jaTem; // havia guia anterior sendo substituída (só possível via recálculo manual)
+  const retificado = jaTem; // já havia guia anterior — a nova é uma retificação
   const nomeArquivo = `DARF DCTF-Web ${MESES_PT_EXTENSO[mes - 1]} ${ano}.pdf`;
-  // substituirExistente só quando é retificação de verdade: troca a guia errada pela corrigida, pra
-  // o cliente nunca ver/pagar duas versões (diferente do "recálculo de DAS", que acumula histórico —
-  // aqui a guia anterior à retificação deixa de valer).
+  // Retificação acumula abaixo do original (substituirExistente=false): o cliente vê ambas e pode
+  // comparar; a guia original deixa de ser válida, mas o histórico fica preservado.
   const docId = integraContadorAnexarPdfEmEnvio(
     atribuicaoId, empresaId, ano, mes, nomeArquivo, guia.pdfBase64,
-    retificado ? `${observacao} DARF retificado — substitui a guia anterior.` : observacao,
-    vencimentoIso || null, retificado, false, vencimentoOrigem
+    retificado ? `${observacao} DARF retificado — adicionado abaixo da guia anterior.` : observacao,
+    vencimentoIso || null, false, false, vencimentoOrigem
   );
   const rotulo = `${String(mes).padStart(2, "0")}/${ano}`;
   const vencTxt = vencimentoIso ? `\n\nVencimento: ${vencimentoIso.split("-").reverse().join("/")}` : "";
