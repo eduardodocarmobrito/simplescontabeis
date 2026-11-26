@@ -19780,6 +19780,7 @@ async function pageCrm(){
       <div class="tab ${CRM.aba==='agenda'?'active':''}" data-aba="agenda">Agenda</div>
       <div class="tab ${CRM.aba==='tags'?'active':''}" data-aba="tags">Tags</div>
       <div class="tab ${CRM.aba==='envio'?'active':''}" data-aba="envio">📤 Envio de documentos</div>
+      <div class="tab ${CRM.aba==='envio_todos'?'active':''}" data-aba="envio_todos">📣 Envio para todos</div>
       <div class="tab ${CRM.aba==='meta'?'active':''}" data-aba="meta">WhatsApp oficial (Meta)</div>
     </div>
     <div id="crmConteudo"></div>
@@ -19791,6 +19792,7 @@ async function pageCrm(){
   else if(CRM.aba==='agenda') await crmAgenda(box);
   else if(CRM.aba==='tags') await crmTags(box);
   else if(CRM.aba==='envio') await centralEnvioMontar('crm', box);
+  else if(CRM.aba==='envio_todos') await centralEnvioTodosMontar(box);
   else await atendimentoMontar('crm', box);
 }
 // Aba Painel: visão geral do atendimento pro gestor (GET /api/atendimento/painel). Todo número com
@@ -27422,6 +27424,197 @@ async function renderCfgEmailSmtp(box){
   }
   const ccComboItems = ccComboItensAtuais();
   setupComboSelect('ccEmpresaCombo', ccComboItems, carregarContatosEDocs);
+}
+
+// ===================== Envio para todos (Comunicados gerais) =====================
+let CETODOS = { timer: null };
+function centralEnvioTodosParar(){ if(CETODOS.timer){ clearInterval(CETODOS.timer); CETODOS.timer=null; } }
+
+async function centralEnvioTodosMontar(box){
+  centralEnvioTodosParar();
+  box.innerHTML = `<div style="padding:24px 0;text-align:center;color:var(--muted)">Carregando…</div>`;
+  let empresas = [], historico = [];
+  try{ [empresas, historico] = await Promise.all([api('/central-envio/comunicados/empresas'), api('/central-envio/comunicados')]); }
+  catch(e){ box.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; return; }
+
+  function renderHistorico(lista){
+    if(!lista.length) return `<div class="empty-state" style="margin-top:16px;">Nenhum comunicado enviado ainda.</div>`;
+    return `<table class="table" style="margin-top:16px;"><thead><tr>
+      <th>Título</th><th>Canais</th><th>Empresas</th><th>Enviados</th><th>Pendentes</th><th>Erros</th><th>Data</th><th></th>
+    </tr></thead><tbody>${lista.map(c=>{
+      const p = c.progresso||{};
+      const statusTag = c.status==='cancelado'?`<span class="tag muted">Cancelado</span>`
+        : p.pendentes>0?`<span class="tag warn">${p.pendentes} pendente${p.pendentes!==1?'s':''}</span>`
+        : p.erros>0?`<span class="tag err">${p.erros} erro${p.erros!==1?'s':''}</span>`
+        : `<span class="tag ok">Concluído</span>`;
+      return `<tr>
+        <td><strong>${esc(c.titulo)}</strong><br><small class="muted">${esc(c.nome_arquivo)}</small></td>
+        <td>${(c.canais||[]).map(ch=>ch==='whatsapp'?'WhatsApp':'E-mail').join(', ')}</td>
+        <td>${p.total||c.n_empresas}</td>
+        <td>${p.enviados||0}</td>
+        <td>${p.pendentes||0}</td>
+        <td>${p.erros||0}</td>
+        <td style="white-space:nowrap">${c.criado_em?new Date(c.criado_em).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</td>
+        <td>${statusTag}${c.status!=='cancelado'&&p.pendentes>0?` <button class="btn-sm" onclick="cetodosCancelar(${c.id})">Cancelar</button>`:''}</td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+  }
+
+  function getFd(){
+    const titulo = document.getElementById('cetodosTitulo').value.trim();
+    const mensagem = document.getElementById('cetodosMensagem').value.trim();
+    const files = document.getElementById('cetodosArquivos').files;
+    const canais = [...document.querySelectorAll('.cetodosCanal:checked')].map(c=>c.value);
+    const quando = document.getElementById('cetodosQuandoSelect').value === 'agendar' ? dateTimeFieldGet('cetodosQuando') : null;
+    const sel = [...document.querySelectorAll('.cetodosEmpSel:checked')].map(c=>Number(c.value));
+    return { titulo, mensagem, files, canais, quando, sel };
+  }
+
+  box.innerHTML = `
+    <div style="max-width:900px; margin:0 auto; padding-bottom:40px;">
+      <h3 style="margin:16px 0 4px;">📣 Comunicado para todos os clientes</h3>
+      <p class="muted" style="margin:0 0 20px;">Envie um documento (PDF) para vários clientes de uma vez pelo número do escritório.</p>
+
+      <div class="card" style="padding:20px; margin-bottom:24px;">
+        <div class="row" style="gap:16px; flex-wrap:wrap;">
+          <div class="field grow"><label>Título / assunto do comunicado</label>
+            <input type="text" id="cetodosTitulo" placeholder="Ex.: Declaração do Imposto de Renda 2025" autocomplete="off" maxlength="200">
+          </div>
+        </div>
+        <div class="field" style="margin-top:12px;"><label>Mensagem (texto que acompanha o arquivo)</label>
+          <textarea id="cetodosMensagem" rows="2" placeholder="Olá! Segue em anexo o comunicado. Qualquer dúvida, estamos à disposição." style="resize:vertical;"></textarea>
+        </div>
+        <div class="field" style="margin-top:12px;"><label>Arquivo(s) PDF — pode selecionar vários (serão mesclados em um único)</label>
+          <input type="file" id="cetodosArquivos" accept=".pdf,application/pdf" multiple style="margin-top:4px;">
+        </div>
+        <div class="row" style="gap:24px; margin-top:16px; flex-wrap:wrap; align-items:flex-start;">
+          <div>
+            <div style="font-size:.85rem; color:var(--muted); margin-bottom:6px; font-weight:500;">Canal de envio</div>
+            <label class="checkbox-row"><input type="checkbox" class="cetodosCanal" value="whatsapp" checked> WhatsApp do escritório</label>
+            <label class="checkbox-row" style="margin-top:4px;"><input type="checkbox" class="cetodosCanal" value="email"> E-mail</label>
+          </div>
+          <div>
+            <div style="font-size:.85rem; color:var(--muted); margin-bottom:6px; font-weight:500;">Quando enviar</div>
+            <label class="checkbox-row"><input type="radio" name="cetodosQuandoR" value="agora" id="cetodosQuandoRAgora" checked> Agora</label>
+            <label class="checkbox-row" style="margin-top:4px;"><input type="radio" name="cetodosQuandoR" value="agendar" id="cetodosQuandoRAge"> Agendar</label>
+            <div id="cetodosQuandoBox" class="hidden" style="margin-top:8px;">${dateTimeFieldHtml('cetodosQuando','Data e hora',new Date(Date.now()+3600000))}</div>
+            <input type="hidden" id="cetodosQuandoSelect" value="agora">
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="padding:20px; margin-bottom:24px;">
+        <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+          <strong>Clientes que receberão o comunicado (${empresas.length})</strong>
+          <div class="row" style="gap:8px; align-items:center;">
+            <input type="text" id="cetodosBusca" placeholder="Filtrar cliente…" style="width:200px;" autocomplete="off">
+            <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="cetodosSelTodos" checked> Selecionar todos</label>
+          </div>
+        </div>
+        <div style="max-height:320px; overflow-y:auto; border:1px solid var(--border); border-radius:6px;">
+          <table class="table" style="margin:0;"><thead><tr>
+            <th style="width:32px;"></th>
+            <th>Cliente</th>
+            <th>WhatsApp</th>
+            <th>E-mail</th>
+          </tr></thead>
+          <tbody id="cetodosEmpLista">${empresas.map(e=>`
+            <tr data-nome="${esc(e.nome.toUpperCase())}">
+              <td><input type="checkbox" class="cetodosEmpSel" value="${e.id}" checked></td>
+              <td>${esc(e.nome)}</td>
+              <td>${e.whatsapp.map(w=>`<div class="tag">${esc(w.nome)} ${esc(w.telefone)}</div>`).join('')||'<span class="muted">—</span>'}</td>
+              <td>${e.email.map(m=>`<div class="tag">${esc(m.email)}</div>`).join('')||'<span class="muted">—</span>'}</td>
+            </tr>`).join('')}
+          </tbody></table>
+        </div>
+        <div class="row" style="justify-content:flex-end; margin-top:8px;">
+          <span id="cetodosSelCount" class="muted" style="font-size:.85rem;">${empresas.length} selecionados</span>
+        </div>
+      </div>
+
+      <div class="row" style="gap:12px; justify-content:flex-end;">
+        <button class="btn-secondary" onclick="pageCrm()">Cancelar</button>
+        <button class="btn" id="cetodosEnviarBtn">📣 Enviar para todos</button>
+      </div>
+
+      <div id="cetodosHistoricoBox">
+        <h4 style="margin:32px 0 4px;">Histórico de comunicados</h4>
+        ${renderHistorico(historico)}
+      </div>
+    </div>`;
+
+  // Rádio agora/agendar
+  document.querySelectorAll('[name="cetodosQuandoR"]').forEach(r=>r.addEventListener('change', ()=>{
+    const v = document.querySelector('[name="cetodosQuandoR"]:checked').value;
+    document.getElementById('cetodosQuandoSelect').value = v;
+    document.getElementById('cetodosQuandoBox').classList.toggle('hidden', v!=='agendar');
+  }));
+  setupDateTimeField('cetodosQuando');
+
+  // Filtro de busca
+  document.getElementById('cetodosBusca').addEventListener('input', e=>{
+    const q = e.target.value.trim().toUpperCase();
+    document.querySelectorAll('#cetodosEmpLista tr').forEach(tr=>{ tr.style.display = !q || tr.dataset.nome.includes(q) ? '' : 'none'; });
+  });
+
+  // Selecionar todos
+  const atualizarCount = ()=>{
+    const n = document.querySelectorAll('.cetodosEmpSel:checked').length;
+    document.getElementById('cetodosSelCount').textContent = `${n} selecionado${n!==1?'s':''}`;
+    const tots = document.querySelectorAll('.cetodosEmpSel').length;
+    const sel = document.getElementById('cetodosSelTodos');
+    sel.indeterminate = n>0 && n<tots;
+    sel.checked = n===tots;
+  };
+  document.getElementById('cetodosSelTodos').addEventListener('change', e=>{
+    document.querySelectorAll('.cetodosEmpSel').forEach(cb=>{ if(cb.closest('tr').style.display!=='none') cb.checked=e.target.checked; });
+    atualizarCount();
+  });
+  box.querySelectorAll('.cetodosEmpSel').forEach(cb=>cb.addEventListener('change', atualizarCount));
+
+  // Enviar
+  document.getElementById('cetodosEnviarBtn').addEventListener('click', async ()=>{
+    const { titulo, mensagem, files, canais, quando, sel } = getFd();
+    if(!titulo){ toast('Informe um título para o comunicado.','err'); return; }
+    if(!canais.length){ toast('Escolha ao menos um canal de envio.','err'); return; }
+    if(!sel.length){ toast('Selecione ao menos um cliente.','err'); return; }
+    if(!files||!files.length){ toast('Selecione ao menos um arquivo PDF.','err'); return; }
+    if(document.getElementById('cetodosQuandoSelect').value==='agendar' && !quando){ toast('Escolha uma data e hora para o agendamento.','err'); return; }
+    const btn = document.getElementById('cetodosEnviarBtn');
+    btn.disabled = true; btn.textContent = 'Enviando…';
+    try{
+      const fd = new FormData();
+      fd.append('titulo', titulo);
+      if(mensagem) fd.append('mensagem', mensagem);
+      canais.forEach(c=>fd.append('canais', c));
+      sel.forEach(id=>fd.append('empresas', String(id)));
+      if(quando) fd.append('quando', quando.toISOString());
+      for(let i=0;i<files.length;i++) fd.append('arquivos', files[i]);
+      const r = await fetch('/api/central-envio/comunicados',{ method:'POST', headers:{ Authorization:'Bearer '+STATE.token }, body:fd });
+      const j = await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(j.error||'Erro ao enviar comunicado.');
+      toast(`Comunicado enfileirado para ${j.enfileirados} cliente${j.enfileirados!==1?'s':''}!`, 'ok');
+      await centralEnvioTodosMontar(box);
+    }catch(e){ toast(e.message,'err'); }
+    finally{ btn.disabled=false; btn.textContent='📣 Enviar para todos'; }
+  });
+
+  // Auto-refresh a cada 10s enquanto a aba estiver aberta
+  CETODOS.timer = setInterval(async ()=>{
+    if(document.hidden || !document.getElementById('cetodosHistoricoBox')) return centralEnvioTodosParar();
+    try{
+      const lista = await api('/central-envio/comunicados');
+      document.getElementById('cetodosHistoricoBox').innerHTML = `<h4 style="margin:32px 0 4px;">Histórico de comunicados</h4>${renderHistorico(lista)}`;
+    }catch{}
+  }, 10000);
+}
+
+async function cetodosCancelar(id){
+  if(!confirm('Cancelar os envios pendentes deste comunicado?')) return;
+  try{
+    await api(`/central-envio/comunicados/${id}/cancelar`,{ method:'POST' });
+    toast('Comunicado cancelado.','ok');
+  }catch(e){ toast(e.message,'err'); }
 }
 
 // ===================== start =====================

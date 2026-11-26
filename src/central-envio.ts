@@ -6,6 +6,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import type express from "express";
+import multer from "multer";
 import { PDFDocument } from "pdf-lib";
 import { gerarPdfDeHtml } from "./contratos";
 
@@ -281,6 +282,13 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     );
     CREATE INDEX IF NOT EXISTS idx_central_agend ON central_envio_agendados(status, agendado_para);
     CREATE INDEX IF NOT EXISTS idx_central_env_empresa ON central_envio_enviados(escritorio_id, empresa_id, enviado_em);
+    CREATE TABLE IF NOT EXISTS central_envio_comunicados (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, escritorio_id INTEGER NOT NULL,
+      titulo TEXT NOT NULL, mensagem TEXT, arquivo_path TEXT, nome_arquivo TEXT NOT NULL,
+      tamanho INTEGER, canais_json TEXT NOT NULL DEFAULT '[]', canal_whatsapp TEXT NOT NULL DEFAULT 'conversa',
+      quando TEXT NOT NULL, n_empresas INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'ativo',
+      criado_por INTEGER, criado_por_nome TEXT, criado_em TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   const colsDocs = (db.prepare(`PRAGMA table_info(central_envio_docs)`).all() as any[]).map((c) => c.name);
@@ -1294,5 +1302,132 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const r = await executarEnvio(user, { ...e, id: e.doc_id }, req.body);
     if (r.erro) return res.status(r.status || 400).json({ error: r.erro });
     res.json({ ok: r.resultados!.some((x) => x.ok), resultados: r.resultados });
+  });
+
+  // ---- Envio para todos (Comunicados gerais) ----
+  const uploadComunicado = multer({ storage: multer.memoryStorage(), limits: { fileSize: 60 * 1024 * 1024, files: 10 } });
+
+  // Lista empresas ativas com contatos — para o preview antes de enviar
+  app.get("/api/central-envio/comunicados/empresas", d.requireAdmin, (req, res) => {
+    const user = (req as any).user;
+    const emps = db.prepare(`SELECT id, nome, cnpj FROM empresas WHERE escritorio_id = ? AND ativo = 1 ORDER BY nome COLLATE NOCASE`).all(user.escritorioId) as any[];
+    const result = emps.map((e) => {
+      const c = contatosDaEmpresa(e.id);
+      return { id: e.id, nome: e.nome, cnpj: e.cnpj, whatsapp: c.whatsapp, email: c.email };
+    }).filter((e) => e.whatsapp.length || e.email.length);
+    res.json(result);
+  });
+
+  // Histórico de comunicados com progresso
+  app.get("/api/central-envio/comunicados", d.requireAdmin, (req, res) => {
+    const user = (req as any).user;
+    const lista = db.prepare(`SELECT * FROM central_envio_comunicados WHERE escritorio_id = ? ORDER BY criado_em DESC LIMIT 100`).all(user.escritorioId) as any[];
+    const result = lista.map((c) => {
+      const prog = db.prepare(`
+        SELECT SUM(CASE WHEN a.status IN ('agendado','enviando') THEN 1 ELSE 0 END) as pendentes,
+               SUM(CASE WHEN a.status = 'enviado' THEN 1 ELSE 0 END) as enviados,
+               SUM(CASE WHEN a.status = 'erro' THEN 1 ELSE 0 END) as erros,
+               SUM(CASE WHEN a.status = 'cancelado' THEN 1 ELSE 0 END) as cancelados,
+               COUNT(*) as total
+        FROM central_envio_agendados a
+        JOIN central_envio_docs x ON x.id = a.doc_id
+        WHERE x.escritorio_id = ? AND x.drive_file_id LIKE ?
+      `).get(user.escritorioId, `comunicado-${c.id}-%`) as any;
+      return { ...c, canais: JSON.parse(c.canais_json || "[]"), progresso: prog || { pendentes: 0, enviados: 0, erros: 0, cancelados: 0, total: 0 } };
+    });
+    res.json(result);
+  });
+
+  // Criar e enfileirar comunicado
+  app.post("/api/central-envio/comunicados", d.requireAdmin, uploadComunicado.array("arquivos", 10), async (req: any, res) => {
+    const user = req.user;
+    const titulo = String(req.body?.titulo || "").trim();
+    const mensagem = String(req.body?.mensagem || "").trim();
+    const canais: string[] = Array.isArray(req.body?.canais) ? req.body.canais : typeof req.body?.canais === "string" ? [req.body.canais] : [];
+    const empresasIds: number[] = Array.isArray(req.body?.empresas) ? req.body.empresas.map(Number) : typeof req.body?.empresas === "string" ? [Number(req.body.empresas)] : [];
+    const canalWhatsapp = req.body?.canalWhatsapp === "meta" ? "meta" : "conversa";
+    const quando = req.body?.quando ? new Date(String(req.body.quando)) : new Date();
+    if (!titulo) return res.status(400).json({ error: "Informe um título para o comunicado." });
+    if (!canais.length) return res.status(400).json({ error: "Escolha WhatsApp e/ou e-mail." });
+    if (!empresasIds.length) return res.status(400).json({ error: "Selecione pelo menos uma empresa." });
+    if (!req.files?.length) return res.status(400).json({ error: "Anexe pelo menos um arquivo PDF." });
+    if (isNaN(quando.getTime())) return res.status(400).json({ error: "Data de envio inválida." });
+
+    // Mesclar PDFs
+    const saida = await PDFDocument.create();
+    for (const f of req.files as Express.Multer.File[]) {
+      try {
+        const origem = await PDFDocument.load(f.buffer, { ignoreEncryption: true });
+        for (const pg of await saida.copyPages(origem, origem.getPageIndices())) saida.addPage(pg);
+      } catch { return res.status(400).json({ error: `Arquivo "${f.originalname}" não é um PDF válido.` }); }
+    }
+    const pdfMerged = Buffer.from(await saida.save());
+    const nomeArquivo = req.files.length === 1 ? (req.files as Express.Multer.File[])[0].originalname : `${titulo}.pdf`;
+
+    const dir = path.join(d.uploadsDir, "central-envio", String(user.escritorioId));
+    fs.mkdirSync(dir, { recursive: true });
+
+    const infoComm = db.prepare(
+      `INSERT INTO central_envio_comunicados (escritorio_id, titulo, mensagem, nome_arquivo, tamanho, canais_json, canal_whatsapp, quando, n_empresas, criado_por, criado_por_nome)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(user.escritorioId, titulo, mensagem || null, nomeArquivoSeguro(nomeArquivo), pdfMerged.length, JSON.stringify(canais), canalWhatsapp, quando.toISOString(), empresasIds.length, user.id, user.nome);
+    const comunicadoId = Number(infoComm.lastInsertRowid);
+
+    const arquivoPdf = path.join(dir, `comunicado-${comunicadoId}.pdf`);
+    fs.writeFileSync(arquivoPdf, pdfMerged);
+    db.prepare(`UPDATE central_envio_comunicados SET arquivo_path = ? WHERE id = ?`).run(arquivoPdf, comunicadoId);
+
+    const md5Hash = crypto.createHash("md5").update(pdfMerged).digest("hex");
+    let enfileirados = 0;
+    for (const empresaId of empresasIds) {
+      const empresa = db.prepare(`SELECT nome FROM empresas WHERE id = ? AND escritorio_id = ?`).get(empresaId, user.escritorioId) as any;
+      if (!empresa) continue;
+      const c = contatosDaEmpresa(empresaId);
+      const telefones = canais.includes("whatsapp") ? c.whatsapp.map((x: any) => x.telefone) : [];
+      const emails = canais.includes("email") ? c.email.map((x: any) => x.email) : [];
+      if (!telefones.length && !emails.length) continue;
+      const infoDoc = db.prepare(
+        `INSERT OR IGNORE INTO central_envio_docs (escritorio_id, setor, drive_file_id, nome_arquivo, md5, tamanho, tipo_nome, empresa_id, titulo, arquivo_path, status)
+         VALUES (?, 'crm', ?, ?, ?, ?, 'Comunicado', ?, ?, ?, 'agendado')`
+      ).run(user.escritorioId, `comunicado-${comunicadoId}-${empresaId}`, nomeArquivoSeguro(nomeArquivo), md5Hash, pdfMerged.length, empresaId, titulo, arquivoPdf);
+      if (!infoDoc.lastInsertRowid) continue;
+      const docId = Number(infoDoc.lastInsertRowid);
+      db.prepare(
+        `INSERT INTO central_envio_agendados (escritorio_id, doc_id, agendado_para, canais_json, telefones_json, emails_json, criado_por, criado_por_nome, canal_whatsapp)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(user.escritorioId, docId, quando.toISOString(), JSON.stringify(canais), JSON.stringify(telefones), JSON.stringify(emails), user.id, user.nome, canalWhatsapp);
+      enfileirados++;
+    }
+    res.json({ ok: true, comunicadoId, enfileirados });
+  });
+
+  // Detalhe de progresso
+  app.get("/api/central-envio/comunicados/:id", d.requireAdmin, (req, res) => {
+    const user = (req as any).user;
+    const c = db.prepare(`SELECT * FROM central_envio_comunicados WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
+    if (!c) return res.status(404).json({ error: "Comunicado não encontrado." });
+    const itens = db.prepare(`
+      SELECT e.nome as empresa_nome, ag.status, ag.erro, ag.executado_em, ag.telefones_json, ag.emails_json
+      FROM central_envio_agendados ag
+      JOIN central_envio_docs x ON x.id = ag.doc_id
+      JOIN empresas e ON e.id = x.empresa_id
+      WHERE x.escritorio_id = ? AND x.drive_file_id LIKE ?
+      ORDER BY e.nome COLLATE NOCASE
+    `).all(user.escritorioId, `comunicado-${c.id}-%`) as any[];
+    res.json({ ...c, canais: JSON.parse(c.canais_json || "[]"), itens });
+  });
+
+  // Cancelar comunicado
+  app.post("/api/central-envio/comunicados/:id/cancelar", d.requireAdmin, (req, res) => {
+    const user = (req as any).user;
+    const c = db.prepare(`SELECT * FROM central_envio_comunicados WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
+    if (!c) return res.status(404).json({ error: "Comunicado não encontrado." });
+    const docs = db.prepare(`SELECT id FROM central_envio_docs WHERE escritorio_id = ? AND drive_file_id LIKE ?`).all(user.escritorioId, `comunicado-${c.id}-%`) as any[];
+    for (const doc of docs) {
+      db.prepare(`UPDATE central_envio_agendados SET status = 'cancelado', executado_em = datetime('now') WHERE doc_id = ? AND status = 'agendado'`).run(doc.id);
+      db.prepare(`UPDATE central_envio_docs SET status = 'dispensado' WHERE id = ? AND status = 'agendado'`).run(doc.id);
+    }
+    db.prepare(`UPDATE central_envio_comunicados SET status = 'cancelado' WHERE id = ?`).run(c.id);
+    res.json({ ok: true });
   });
 }
