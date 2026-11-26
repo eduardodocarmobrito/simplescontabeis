@@ -246,6 +246,15 @@ export function credencialDriveDoEscritorio(sqlite: any, decifrar: (s: string) =
 }
 export function registerCentralEnvio(app: express.Express, d: Deps) {
   const db = d.sqlite;
+  // "Envio para todos" (comunicado em massa) era requireAdmin — pedido 2026-11-26 pra liberar pra
+  // quem já pode postar mensagem no CRM normal (mesma permissão de mandar WhatsApp/e-mail avulso pro
+  // cliente, só que em lote), em vez de criar uma permissão nova só pra isso.
+  const requireCrmPostar: express.RequestHandler = (req, res, next) => {
+    if (!d.hasPermissao((req as any).user, "crm", "postar")) {
+      return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+    }
+    next();
+  };
   db.exec(`
     CREATE TABLE IF NOT EXISTS central_envio_config (
       escritorio_id INTEGER PRIMARY KEY, sa_json_cifrado TEXT, sa_email TEXT, ultimo_erro TEXT, ultima_varredura TEXT, dias_inicial INTEGER NOT NULL DEFAULT 30
@@ -1308,7 +1317,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   const uploadComunicado = multer({ storage: multer.memoryStorage(), limits: { fileSize: 60 * 1024 * 1024, files: 10 } });
 
   // Lista empresas ativas com contatos — para o preview antes de enviar
-  app.get("/api/central-envio/comunicados/empresas", d.requireAdmin, (req, res) => {
+  app.get("/api/central-envio/comunicados/empresas", d.blockCliente, requireCrmPostar, (req, res) => {
     const user = (req as any).user;
     const emps = db.prepare(`SELECT id, nome, cnpj FROM empresas WHERE escritorio_id = ? AND ativo = 1 ORDER BY nome COLLATE NOCASE`).all(user.escritorioId) as any[];
     const result = emps.map((e) => {
@@ -1319,7 +1328,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   });
 
   // Histórico de comunicados com progresso
-  app.get("/api/central-envio/comunicados", d.requireAdmin, (req, res) => {
+  app.get("/api/central-envio/comunicados", d.blockCliente, requireCrmPostar, (req, res) => {
     const user = (req as any).user;
     const lista = db.prepare(`SELECT * FROM central_envio_comunicados WHERE escritorio_id = ? ORDER BY criado_em DESC LIMIT 100`).all(user.escritorioId) as any[];
     const result = lista.map((c) => {
@@ -1339,7 +1348,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   });
 
   // Criar e enfileirar comunicado
-  app.post("/api/central-envio/comunicados", d.requireAdmin, uploadComunicado.array("arquivos", 10), async (req: any, res) => {
+  app.post("/api/central-envio/comunicados", d.blockCliente, requireCrmPostar, uploadComunicado.array("arquivos", 10), async (req: any, res) => {
     const user = req.user;
     const titulo = String(req.body?.titulo || "").trim();
     const mensagem = String(req.body?.mensagem || "").trim();
@@ -1402,7 +1411,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   });
 
   // Detalhe de progresso
-  app.get("/api/central-envio/comunicados/:id", d.requireAdmin, (req, res) => {
+  app.get("/api/central-envio/comunicados/:id", d.blockCliente, requireCrmPostar, (req, res) => {
     const user = (req as any).user;
     const c = db.prepare(`SELECT * FROM central_envio_comunicados WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
     if (!c) return res.status(404).json({ error: "Comunicado não encontrado." });
@@ -1418,7 +1427,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   });
 
   // Cancelar comunicado
-  app.post("/api/central-envio/comunicados/:id/cancelar", d.requireAdmin, (req, res) => {
+  app.post("/api/central-envio/comunicados/:id/cancelar", d.blockCliente, requireCrmPostar, (req, res) => {
     const user = (req as any).user;
     const c = db.prepare(`SELECT * FROM central_envio_comunicados WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
     if (!c) return res.status(404).json({ error: "Comunicado não encontrado." });
