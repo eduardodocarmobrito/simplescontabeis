@@ -9880,6 +9880,8 @@ const ENVIO_TEMPLATES_PROTEGIDOS = [
 ];
 app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visualizar"), (req, res) => {
   const rows = sqlite.prepare(`SELECT * FROM envio_templates WHERE escritorio_id = ? ORDER BY nome`).all((req as any).user.escritorioId) as any[];
+  const temAtrib = sqlite.prepare(`SELECT template_id FROM envio_atribuicoes WHERE ativo = 1 AND escritorio_id = ?`).all((req as any).user.escritorioId) as any[];
+  const idsComAtrib = new Set(temAtrib.map((a) => a.template_id));
   res.json({
     items: rows.map((r) => ({
       ...r,
@@ -9891,6 +9893,7 @@ app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visuali
       autoRegimeTributario: r.auto_regime_tributario,
       pendenteRevisao: !!r.pendente_revisao,
       protegido: ENVIO_TEMPLATES_PROTEGIDOS.includes(r.nome),
+      temAtribuicoes: idsComAtrib.has(r.id),
     })),
   });
 });

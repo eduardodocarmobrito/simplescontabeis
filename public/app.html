@@ -6995,7 +6995,7 @@ async function renderEnvioModelos(){
       <td>${t.accept.map(a=>`<span class="tag muted">${esc(a)}</span>`).join(' ')}</td>
       <td><span class="tag ${t.detectarVencimento?'ok':'muted'}">${t.detectarVencimento?'Detecta':'Não se aplica'}</span></td>
       <td><span class="tag ${t.visivelCliente?'ok':'muted'}">${t.visivelCliente?'Sim':'Não'}</span></td>
-      <td style="text-align:right; white-space:nowrap; display:flex; gap:6px; justify-content:flex-end;">${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''} ${podeEditar&&!t.protegido?`<button class="btn small danger" data-act="del">Excluir</button>`:''}</td>
+      <td style="text-align:right; white-space:nowrap; display:flex; gap:6px; justify-content:flex-end;">${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''} ${podeEditar&&!t.protegido&&!t.temAtribuicoes?`<button class="btn small danger" data-act="del">Excluir</button>`:''}</td>
     </tr>
   `).join('') : `<tr><td colspan="6"><div class="empty-state">${items.length?'Nenhum modelo encontrado com esse filtro.':'Nenhum modelo cadastrado ainda.'}</div></td></tr>`;
     if(podeEditar){
