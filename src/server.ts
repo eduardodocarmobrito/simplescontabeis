@@ -16996,6 +16996,16 @@ async function licencaRedencaoConsultarEmpresa(
     return { ok: false, novos: 0, erro: e.message };
   }
 }
+// Progresso em memória do "Executar agora" (geral) — por escritório, pra um botão poder acompanhar
+// com polling (mesmo padrão do card DAS Não Pago, dasPagamentoProgresso) sem travar a requisição
+// enquanto roda (pode levar minutos — login completo por navegador, empresa por empresa).
+type LicencaRedencaoProgresso = { rodando: boolean; total: number; feitas: number; ok: number; novos: number; erros: { empresa: string; erro: string }[]; concluidaEm: string | null };
+const licencaRedencaoProgresso = new Map<number, LicencaRedencaoProgresso>();
+function licencaRedencaoProgressoDe(escritorioId: number): LicencaRedencaoProgresso {
+  let p = licencaRedencaoProgresso.get(escritorioId);
+  if (!p) { p = { rodando: false, total: 0, feitas: 0, ok: 0, novos: 0, erros: [], concluidaEm: null }; licencaRedencaoProgresso.set(escritorioId, p); }
+  return p;
+}
 async function licencaRedencaoConsultarTodas(escritorioId: number): Promise<{ total: number; ok: number; novos: number; erros: { empresa: string; erro: string }[] }> {
   const configs = sqlite
     .prepare(
@@ -17004,6 +17014,8 @@ async function licencaRedencaoConsultarTodas(escritorioId: number): Promise<{ to
        WHERE c.ativo = 1 AND e.escritorio_id = ? AND e.ativo = 1`
     )
     .all(escritorioId) as any[];
+  const p = licencaRedencaoProgressoDe(escritorioId);
+  p.rodando = true; p.total = configs.length; p.feitas = 0; p.ok = 0; p.novos = 0; p.erros = []; p.concluidaEm = null;
   let ok = 0, novos = 0;
   const erros: { empresa: string; erro: string }[] = [];
   // Mesmo cuidado do CND municipal: relança o navegador a cada poucas empresas (memória do Chromium).
@@ -17016,13 +17028,17 @@ async function licencaRedencaoConsultarTodas(escritorioId: number): Promise<{ to
       if (!browser || i % RELANCA_A_CADA === 0 || !browser.isConnected?.()) await novoBrowser();
       i++;
       let senha: string;
-      try { senha = nfse.decifrarTexto(c.senhaCifrada); } catch { erros.push({ empresa: c.nome, erro: "Senha salva corrompida — cadastre novamente." }); continue; }
+      try { senha = nfse.decifrarTexto(c.senhaCifrada); } catch { erros.push({ empresa: c.nome, erro: "Senha salva corrompida — cadastre novamente." }); p.feitas++; p.erros = erros; continue; }
       let r: { ok: boolean; novos: number; erro?: string };
       try { r = await licencaRedencaoConsultarEmpresa(escritorioId, { id: c.empresaId, nome: c.nome }, c.cnpjLogin, senha, browser); }
       catch (e: any) { r = { ok: false, novos: 0, erro: e.message }; await novoBrowser().catch(() => {}); }
       if (r.ok) { ok++; novos += r.novos; } else erros.push({ empresa: c.nome, erro: r.erro || "erro" });
+      p.feitas++; p.ok = ok; p.novos = novos; p.erros = erros;
     }
-  } finally { if (browser) await browser.close().catch(() => {}); }
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+    p.rodando = false; p.concluidaEm = new Date().toISOString();
+  }
   return { total: configs.length, ok, novos, erros };
 }
 app.get("/api/empresas/:id/licenca-redencao", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
@@ -17070,6 +17086,27 @@ app.post("/api/empresas/:id/licenca-redencao/consultar", blockCliente, requirePe
   const r = await licencaRedencaoConsultarEmpresa(user.escritorioId, empresa, cfg.cnpj_login, senha);
   if (!r.ok) return res.status(400).json({ error: r.erro || "Falha na consulta." });
   res.json({ ok: true, novos: r.novos });
+});
+// "Executar agora" geral (botão na página Licenças) — roda TODAS as empresas do escritório em
+// segundo plano, mesmo padrão de polling do DAS Não Pago (não trava a requisição, pode levar minutos).
+app.post("/api/empresas/licenca-redencao/executar", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const p = licencaRedencaoProgressoDe(user.escritorioId);
+  if (p.rodando) return res.status(409).json({ error: "A consulta já está em andamento." });
+  void licencaRedencaoConsultarTodas(user.escritorioId).catch((e: any) => console.error("[licencas redencao] executar geral:", e.message));
+  res.json({ ok: true, progresso: p });
+});
+app.get("/api/empresas/licenca-redencao/status", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  // totalConfigurado vem direto do banco (não do progresso em memória, que só é preenchido depois da
+  // 1ª execução) — sem isso, antes de clicar "Executar agora" uma vez, o front não distinguia "nunca
+  // rodou ainda" de "nenhuma empresa cadastrada" (os dois mostravam total=0 do mesmo jeito).
+  const totalConfigurado = (
+    sqlite
+      .prepare(`SELECT COUNT(*) as n FROM empresa_licenca_redencao_config c JOIN empresas e ON e.id = c.empresa_id WHERE c.ativo = 1 AND e.escritorio_id = ? AND e.ativo = 1`)
+      .get(user.escritorioId) as any
+  ).n;
+  res.json({ progresso: licencaRedencaoProgressoDe(user.escritorioId), totalConfigurado });
 });
 // Agendador: 2x/dia (mesma cadência do CND municipal), só pras empresas com credencial cadastrada e ativa.
 setInterval(() => {

@@ -5862,6 +5862,47 @@ async function ligarLicencaRedencao(empresaId, aoAtualizarAnexos){
     }catch(err){ toast(err.message,'err'); }
   });
 }
+// "Executar agora (todas)" da consulta automática de Redenção — mesmo padrão de polling do card DAS
+// Não Pago (acompanhar/mostrar com setTimeout recursivo, não trava a tela enquanto roda).
+function ligarLicencaRedencaoExecutarGeral(){
+  const btn = document.getElementById('licRedExecBtn'), msg = document.getElementById('licRedExecMsg');
+  if(!btn) return;
+  let timer = null;
+  const mostrar = (st)=>{
+    const p = st.progresso||{};
+    if(p.rodando){
+      btn.disabled = true; btn.textContent = 'Executando…';
+      msg.style.color = 'var(--ink-soft)';
+      msg.textContent = `Consultando: ${p.feitas}/${p.total} empresa(s)${p.erros.length?` · ${p.erros.length} com erro`:''}…`;
+      return true;
+    }
+    btn.disabled = false; btn.textContent = '🔄 Executar agora (todas)';
+    if(p.concluidaEm && p.total){
+      msg.style.color = p.erros.length? 'var(--debit)':'var(--credit)';
+      msg.textContent = `Última execução: ${fmtDateHora(p.concluidaEm)} — ${p.ok}/${p.total} ok, ${p.novos} licença(s) nova(s)${p.erros.length?` · com erro: ${p.erros.slice(0,3).map(e=>e.empresa).join(', ')}${p.erros.length>3?'…':''}`:''}.`;
+    } else if(!st.totalConfigurado){
+      msg.style.color = 'var(--ink-soft)';
+      msg.textContent = 'Nenhuma empresa com credencial cadastrada ainda (cadastre em Empresas › editar › aba Licenças).';
+    } else {
+      msg.style.color = 'var(--ink-soft)';
+      msg.textContent = `${st.totalConfigurado} empresa(s) com credencial cadastrada — ainda não executado nesta sessão do servidor.`;
+    }
+    return false;
+  };
+  const acompanhar = async ()=>{
+    try{
+      const st = await api('/empresas/licenca-redencao/status');
+      const rodando = mostrar(st);
+      if(rodando) timer = setTimeout(acompanhar, 3000);
+      else timer = null;
+    }catch(e){}
+  };
+  btn.addEventListener('click', async ()=>{
+    try{ await api('/empresas/licenca-redencao/executar', { method:'POST' }); timer = 0; acompanhar(); }
+    catch(e){ msg.style.color = 'var(--debit)'; msg.textContent = e.message; }
+  });
+  acompanhar();
+}
 // ===================== Licenças (carga em lote por pasta) =====================
 // Escolhe uma pasta inteira de PDFs (o navegador junta tudo o que tem lá dentro num FileList só,
 // via webkitdirectory — suportado em Chrome/Edge/Safari; em navegador sem suporte, "multiple"
@@ -5877,6 +5918,14 @@ async function pageLicencasBulk(){
     <p class="subtitle">Carregue de uma vez todos os PDFs de um tipo de licença — o sistema lê o CNPJ/CPF de dentro de cada arquivo e anexa sozinho na empresa certa (mesmo lugar da aba Licenças de cada empresa).</p>
     ${!podePostar? `<p class="tag muted">Você só tem permissão de visualização neste módulo.</p>`:''}
     <div class="card">
+      <h3>🏛 Consulta automática — Alvará/Licença Sanitária (Prefeitura de Redenção-PA)</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 10px;">Cadastre a credencial de cada empresa em Empresas › editar › aba Licenças. Aqui você roda a consulta de TODAS as empresas cadastradas de uma vez (a rotina automática já faz isso sozinha 2x/dia).</p>
+      <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap;">
+        <button class="btn primary" id="licRedExecBtn">🔄 Executar agora (todas)</button>
+        <span id="licRedExecMsg" style="font-size:12px; color:var(--ink-soft);"></span>
+      </div>
+    </div>
+    <div class="card">
       <h3>1. Tipo de licença</h3>
       <div class="row" id="lbTipos" style="flex-wrap:wrap; gap:10px;">
         ${tiposLicenca.map(([v,info])=>`<div class="kpi" data-tipo="${v}" style="cursor:pointer; min-width:220px;"><div class="eyebrow">Selecionar</div><div class="val" style="font-size:16px;">${esc(info.label)}</div></div>`).join('')}
@@ -5884,6 +5933,7 @@ async function pageLicencasBulk(){
     </div>
     <div id="lbResto"></div>
   `;
+  ligarLicencaRedencaoExecutarGeral();
   let tipoEscolhido = null;
   const tiposWrap = document.getElementById('lbTipos');
   tiposWrap.querySelectorAll('[data-tipo]').forEach(el=>el.addEventListener('click', ()=>{
