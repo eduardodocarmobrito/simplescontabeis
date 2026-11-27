@@ -27173,16 +27173,39 @@ app.get("/api/propostas/:id", blockCliente, requirePermissao("contratos", "visua
   if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
   res.json(propostaMontarResposta(p));
 });
-app.put("/api/propostas/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
-  const p = propostaLinha((req as any).user, Number(req.params.id));
+app.put("/api/propostas/:id", blockCliente, requirePermissao("contratos", "editar"), async (req, res) => {
+  const user = (req as any).user;
+  const p = propostaLinha(user, Number(req.params.id));
   if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
   if (p.status === "aprovada") return res.status(409).json({ error: "Proposta já aprovada — o contrato já foi gerado com esses valores." });
-  const analise = JSON.parse(p.analise);
+  let analise = JSON.parse(p.analise);
+  let analiseJson = p.analise;
+  let empresasIds = JSON.parse(p.empresas_ids || "[]") as number[];
+  // Trocar as empresas da proposta (incluir/remover CNPJ) sempre refaz a análise inteira a partir das
+  // notas de hoje — pedido do usuário 2026-11-27: "inclua mais empresa... refaça toda a analise
+  // novamente". A principal (empresa_id, quem assina o contrato) nunca é removida por aqui.
+  if (Array.isArray(req.body?.empresaIds)) {
+    const novasIds = [p.empresa_id, ...new Set<number>(req.body.empresaIds.map(Number).filter((n: number) => n && n !== p.empresa_id))];
+    if (!novasIds.every((eid: number) => podeAcessarEmpresa(user, eid))) return res.status(403).json({ error: "Sem acesso a alguma das empresas escolhidas." });
+    if (novasIds.length > 30) return res.status(400).json({ error: "Escolha no máximo 30 CNPJs por proposta." });
+    const mudou = novasIds.length !== empresasIds.length || novasIds.some((eid: number) => !empresasIds.includes(eid));
+    if (mudou) {
+      try {
+        analise = await propostaAnalisar(user.escritorioId, novasIds);
+      } catch (e: any) {
+        return res.status(500).json({ error: `Não consegui analisar as notas: ${e.message}` });
+      }
+      analiseJson = JSON.stringify(analise);
+      empresasIds = novasIds;
+    }
+  }
   const atual = propostas.normalizarConfig(JSON.parse(p.config || "{}"), propostas.configPadrao(analise));
   const config = propostas.normalizarConfig(req.body?.config || {}, atual);
   const clienteNome = req.body?.clienteNome !== undefined ? String(req.body.clienteNome).trim().slice(0, 150) || p.cliente_nome : p.cliente_nome;
-  sqlite.prepare(`UPDATE propostas SET config = ?, cliente_nome = ?, updated_at = datetime('now') WHERE id = ?`).run(JSON.stringify(config), clienteNome, p.id);
-  res.json(propostaMontarResposta({ ...p, config: JSON.stringify(config), cliente_nome: clienteNome }));
+  sqlite
+    .prepare(`UPDATE propostas SET analise = ?, empresas_ids = ?, config = ?, cliente_nome = ?, updated_at = datetime('now') WHERE id = ?`)
+    .run(analiseJson, JSON.stringify(empresasIds), JSON.stringify(config), clienteNome, p.id);
+  res.json(propostaMontarResposta({ ...p, analise: analiseJson, empresas_ids: JSON.stringify(empresasIds), config: JSON.stringify(config), cliente_nome: clienteNome }));
 });
 app.post("/api/propostas/:id/reanalisar", blockCliente, requirePermissao("contratos", "editar"), async (req, res) => {
   const user = (req as any).user;

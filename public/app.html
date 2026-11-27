@@ -17785,7 +17785,10 @@ async function renderPropostaEditor(id){
       ${!travada ? `<div class="row" style="margin-top:12px;"><button class="btn primary" id="ppSalvar" disabled>Salvar valores</button><button class="btn" id="ppCancelar" disabled>Cancelar</button><span id="ppSalvoMsg" style="font-size:12.5px; color:var(--ink-soft);"></span></div>` : ''}
     </div>
     <div class="card" style="overflow-x:auto;">
-      <h3>Análise por CNPJ</h3>
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <h3 style="margin:0;">Análise por CNPJ</h3>
+        ${!travada ? `<button class="btn small" id="ppEditarEmpresas">+ Incluir/remover empresa</button>` : ''}
+      </div>
       <table class="data-table">
         <thead><tr><th>Empresa</th><th>Regime</th><th style="text-align:right;">NF-e</th><th style="text-align:right;">Compras</th><th style="text-align:right;">Com falha</th><th style="text-align:right;">Fornec. c/ falha</th><th style="text-align:right;">Crédito 2027/ano</th></tr></thead>
         <tbody>${a.empresas.map(e=>`<tr>
@@ -17884,6 +17887,32 @@ async function renderPropostaEditor(id){
     const b = ev.currentTarget; b.disabled = true; b.textContent = 'Analisando as notas…';
     try{ await salvar(); await api('/propostas/'+id+'/reanalisar', { method:'POST' }); toast('Análise atualizada.','ok'); renderPropostaEditor(id); }
     catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='↻ Reanalisar notas'; }
+  });
+  document.getElementById('ppEditarEmpresas')?.addEventListener('click', async ()=>{
+    const todas = (await api('/empresas')).items.filter(e=>e.ativo);
+    const outras = todas.filter(e=>e.id!==P.empresaId).sort((a,b)=>a.nome.localeCompare(b.nome));
+    const marcadas = P.empresasIds.filter(eid=>eid!==P.empresaId);
+    openModal(`
+      <h3>Empresas desta proposta</h3>
+      <p class="muted" style="margin:0 0 10px;">A empresa principal (que assina o contrato) sempre entra. Marque as demais que devem entrar na análise — ao salvar, a análise inteira é refeita com as notas de hoje.</p>
+      ${checklistComFiltroHtml('ppEditEmp', outras, marcadas)}
+      <div class="modal-actions">
+        <button class="btn" id="ppEditEmpCancel">Cancelar</button>
+        <button class="btn primary" id="ppEditEmpSalvar">Salvar e reanalisar</button>
+      </div>
+    `, '640px');
+    setupChecklistFiltro('ppEditEmp');
+    document.getElementById('ppEditEmpCancel').addEventListener('click', closeModal);
+    document.getElementById('ppEditEmpSalvar').addEventListener('click', async (ev)=>{
+      const novasIds = [...document.querySelectorAll('.ppEditEmpCheck:checked')].map(c=>Number(c.value));
+      const btn = ev.currentTarget; btn.disabled = true; btn.textContent = 'Analisando as notas…';
+      try{
+        await api('/propostas/'+id, { method:'PUT', body:{ empresaIds: novasIds } });
+        toast('Empresas e análise atualizadas.','ok');
+        closeModal();
+        renderPropostaEditor(id);
+      }catch(e){ toast(e.message,'err'); btn.disabled=false; btn.textContent='Salvar e reanalisar'; }
+    });
   });
   box.querySelectorAll('[data-st]').forEach(b=>b.addEventListener('click', async ()=>{
     try{ await salvar(); await api('/propostas/'+id+'/status', { method:'POST', body:{ status:b.dataset.st } }); renderPropostaEditor(id); }
