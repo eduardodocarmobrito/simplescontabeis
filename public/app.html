@@ -12260,8 +12260,13 @@ async function pageNfeBusca(){
     if(togglePausadas) togglePausadas.addEventListener('click', (ev)=>{ ev.preventDefault(); NFE_MOSTRAR_PAUSADAS = !NFE_MOSTRAR_PAUSADAS; mostrarLista(); });
     const filtro = document.getElementById('nfeListaFiltro');
     if(filtro) filtro.addEventListener('input', ()=>{
-      const termo = normalizaTxt(filtro.value);
-      box.querySelectorAll('.nfeEmpresaRow').forEach(row=>{ row.style.display = (row.dataset.nome.includes(termo) || (row.dataset.codigo && row.dataset.codigo.includes(termo))) ? '' : 'none'; });
+      // Por palavra, não a frase inteira — "fabricio pinto tenorio" tem que achar mesmo que o nome
+      // na lista esteja em outra ordem ou com algo no meio (mesma lógica do combobox).
+      const tokens = normalizaTxt(filtro.value).trim().split(/\s+/).filter(Boolean);
+      box.querySelectorAll('.nfeEmpresaRow').forEach(row=>{
+        const alvo = row.dataset.nome + ' ' + (row.dataset.codigo||'');
+        row.style.display = tokens.every(t=>alvo.includes(t)) ? '' : 'none';
+      });
     });
   }
 
@@ -23163,10 +23168,11 @@ function setupChecklistFiltro(idPrefix){
   const filtro = document.getElementById(idPrefix+'Filtro');
   if(!filtro) return;
   filtro.addEventListener('input', ()=>{
-    const termo = normalizaTxt(filtro.value);
+    // Por palavra, não a frase inteira — mesma lógica do combobox (ex.: "fabricio pinto tenorio").
+    const tokens = normalizaTxt(filtro.value).trim().split(/\s+/).filter(Boolean);
     const termoDig = filtro.value.replace(/\D/g,''); // dígitos do que foi digitado (busca por CNPJ)
     document.querySelectorAll('.'+idPrefix+'Linha').forEach(el=>{
-      const casaNome = el.dataset.nome.includes(termo);
+      const casaNome = tokens.every(t=>el.dataset.nome.includes(t));
       const casaCnpj = termoDig && el.dataset.cnpj && el.dataset.cnpj.includes(termoDig);
       el.style.display = (casaNome || casaCnpj) ? '' : 'none';
     });
