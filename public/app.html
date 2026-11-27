@@ -9369,30 +9369,6 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
         ${podeEditar?`<button class="btn danger" id="btnNfeRemoverCert_${empresaId}">Remover certificado</button>`:''}
       </div>
       <div id="nfeBuscaResultado_${empresaId}" style="margin-top:10px;"></div>
-      ${podePostar?`<div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--rule);">
-        <div style="font-weight:600; font-size:13px;">Já tem uma nota de venda recente? Traga suas vendas pro sistema</div>
-        <p style="font-size:12px; color:var(--ink-soft); margin:4px 0 8px;">Cole a chave de acesso de uma venda qualquer dessa empresa — o sistema usa ela como ponto de partida e já traz as vendas seguintes automaticamente, de forma contínua.</p>
-        <div class="row" style="gap:8px;">
-          <div class="field grow" style="margin:0;"><input id="nfeChaveSaida_${empresaId}" maxlength="44" placeholder="44 números da chave de acesso"></div>
-          <button class="btn" id="btnNfeAncorarSaida_${empresaId}">Buscar a partir dessa nota</button>
-        </div>
-        <div id="nfeAncorarResultado_${empresaId}" style="margin-top:8px;"></div>
-        <details style="margin-top:14px;">
-          <summary style="cursor:pointer; font-weight:600; font-size:13px; color:var(--ink-soft);">Avançado</summary>
-          <div style="margin-top:10px;">
-            <p style="font-size:11.5px; color:var(--ink-soft); margin:0 0 4px;"><b>Por que a chave acima às vezes não funciona:</b> se a própria empresa for a emitente da nota, a Sefaz recusa essa consulta específica com "NF-e indisponível para o emitente" (regra dela — não é um erro nosso). Mesmo assim a venda pode chegar sozinha depois: na busca sequencial normal, várias empresas já trazem as próprias vendas depois de rodar por um tempo. Se uma empresa só mostra compras, use "Reiniciar e buscar tudo de novo" abaixo.</p>
-            <button class="btn small" id="btnNfeReiniciar_${empresaId}" style="margin-top:6px;">🔄 Reiniciar e buscar tudo de novo</button>
-            <div id="nfeReiniciarResultado_${empresaId}" style="margin-top:8px;"></div>
-            <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--rule);">
-              <div style="font-weight:600; font-size:13px;">Testar chaves conhecidas (não altera nada)</div>
-              <p style="font-size:11.5px; color:var(--ink-soft); margin:4px 0 8px;">Cola aqui embaixo chaves de acesso (NF-e ou CT-e) que você sabe que existem pra esta empresa — uma por linha. O sistema pergunta pra Sefaz, uma por uma, o que ela diz sobre cada uma (achou? deu erro?) e, se achar, já traz o documento pro sistema. Não mexe no cursor da busca automática.</p>
-              <textarea id="nfeChavesTeste_${empresaId}" rows="4" style="width:100%; font-family:monospace; font-size:12px;" placeholder="44 números por linha, uma chave em cada"></textarea>
-              <button class="btn small" id="btnNfeTestarChaves_${empresaId}" style="margin-top:6px;">Testar chaves</button>
-              <div id="nfeTestarChavesResultado_${empresaId}" style="margin-top:8px;"></div>
-            </div>
-          </div>
-        </details>
-      </div>`:''}
     `;
     if(podeEditar) containerEl.querySelector(`#nfeCfgAtivo_${empresaId}`).addEventListener('change', async (ev)=>{
       const ligando = ev.target.checked;
