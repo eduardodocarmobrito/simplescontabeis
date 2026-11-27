@@ -1881,8 +1881,12 @@ function setupComboSelect(id, items, onChange){
     if(els[ativo]) els[ativo].scrollIntoView({ block:'nearest' });
   }
   function renderList(filtro){
-    const termo = (filtro||'').trim().toLowerCase();
-    const filtrados = termo? items.filter(it=>it.label.toLowerCase().includes(termo)) : items;
+    // Por palavra (não a frase inteira): "concei ar" tem que achar "Conceição do Araguaia" mesmo com
+    // "do" no meio — cada palavra digitada vira um token, e o item só entra se TODOS os tokens
+    // aparecerem nele (em qualquer ordem/posição). normalizaTxt tira acento dos dois lados também.
+    const tokens = normalizaTxt(filtro||'').trim().split(/\s+/).filter(Boolean);
+    const filtrados = tokens.length? items.filter(it=>{ const label = normalizaTxt(it.label); return tokens.every(t=>label.includes(t)); }) : items;
+    const termo = tokens.length ? tokens.join(' ') : '';
     list.innerHTML = filtrados.length
       ? filtrados.map(it=>`<div class="combo-item" data-id="${it.id}">${esc(it.label)}</div>`).join('')
       : `<div class="combo-empty">Nenhum resultado.</div>`;
