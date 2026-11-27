@@ -5206,15 +5206,12 @@ function empresaModal(e){
         <div class="field" style="width:220px;"><label>CEI (produtor rural/obra)</label><input id="empCei" inputmode="numeric" maxlength="20" value="${e&&e.cei?esc(e.cei):''}" placeholder="12 dígitos"></div>
         <div class="field" style="width:220px;"><label>CAEPF</label><input id="empCaepf" inputmode="numeric" maxlength="20" value="${e&&e.caepf?esc(e.caepf):''}" placeholder="14 dígitos"></div>
       </div>
-      <div class="row" style="align-items:center;">
-        <div class="field" style="width:140px; margin-bottom:0;"><label>CEP</label><input id="empCep" inputmode="numeric" maxlength="9" value="${e&&e.cep?esc(fmtCep(e.cep)):''}" placeholder="00000-000"></div>
-        <span id="empCepStatus" style="font-size:11.5px; color:var(--ink-soft); margin-top:14px;"></span>
-      </div>
-      <div class="row">
-        <div class="field grow"><label>Endereço</label><input id="empEndereco" value="${e&&e.endereco?esc(e.endereco):''}"></div>
-        <div class="field" style="width:240px;"><label>Cidade (IBGE) — obrigatória pra emitir NFS-e</label>${comboSelectHtml('empCidadeIbge','Digite a cidade…')}</div>
-        <div class="field" style="width:110px;"><label>Código do município</label><input id="empCodigoMunicipio" readonly style="background:var(--paper);" value="${e&&e.codigoMunicipioIbge?esc(e.codigoMunicipioIbge):''}" maxlength="7"></div>
-        <div class="field" style="width:70px;"><label>UF</label><input id="empUf" readonly style="background:var(--paper);" value="${e&&e.uf?esc(e.uf):''}"></div>
+      <div class="row" style="align-items:flex-end;">
+        <div class="field" style="width:120px; flex-shrink:0;"><label>CEP</label><input id="empCep" inputmode="numeric" maxlength="9" value="${e&&e.cep?esc(fmtCep(e.cep)):''}" placeholder="00000-000"><span id="empCepStatus" style="font-size:10.5px; color:var(--ink-soft); display:block; min-height:13px; line-height:1.2; margin-top:2px;"></span></div>
+        <div class="field" style="flex:1; min-width:0;"><label>Endereço</label><input id="empEndereco" value="${e&&e.endereco?esc(e.endereco):''}"></div>
+        <div class="field" style="width:200px; flex-shrink:0;"><label>Cidade (IBGE) — obrigatória pra emitir NFS-e</label>${comboSelectHtml('empCidadeIbge','Digite a cidade…')}</div>
+        <div class="field" style="width:100px; flex-shrink:0;"><label>Código do município</label><input id="empCodigoMunicipio" readonly style="background:var(--paper);" value="${e&&e.codigoMunicipioIbge?esc(e.codigoMunicipioIbge):''}" maxlength="7"></div>
+        <div class="field" style="width:60px; flex-shrink:0;"><label>UF</label><input id="empUf" readonly style="background:var(--paper);" value="${e&&e.uf?esc(e.uf):''}"></div>
       </div>
       <input type="hidden" id="empCidade" value="${e&&e.cidade?esc(e.cidade):''}">
       <input type="hidden" id="empNomeMunicipio" value="${e&&e.nomeMunicipioIbge?esc(e.nomeMunicipioIbge):''}">
